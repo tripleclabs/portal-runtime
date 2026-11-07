@@ -1,0 +1,8 @@
+node_modules/
+*.tgz
+playwright-report/
+test-results/
+.DS_Store
+.env
+.env.*
+# dist/ is intentionally committed for build-free GitHub installation.

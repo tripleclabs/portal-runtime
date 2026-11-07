@@ -1,0 +1,62 @@
+{
+  "name": "@wearecococo/portal-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "State and progressive navigation for server-rendered DataXML and Lua sites",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./auto": {
+      "types": "./dist/auto.d.ts",
+      "import": "./dist/auto.js"
+    },
+    "./browser": "./dist/portal-runtime.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "PROVENANCE.md",
+    "LICENSE",
+    "docs",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node --experimental-strip-types scripts/build-browser.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "check": "tsc -p tsconfig.test.json",
+    "test:browser": "pnpm build && node --experimental-strip-types scripts/browser-smoke.ts",
+    "test:package": "node --experimental-strip-types scripts/package-smoke.ts"
+  },
+  "packageManager": "pnpm@11.22.0",
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vitest": "^4.0.18",
+    "jsdom": "^27.0.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.63.0",
+    "@types/node": "^24.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tripleclabs/portal-runtime.git"
+  },
+  "homepage": "https://github.com/tripleclabs/portal-runtime#readme",
+  "bugs": {
+    "url": "https://github.com/tripleclabs/portal-runtime/issues"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "keywords": [
+    "ssr",
+    "progressive-enhancement",
+    "html",
+    "state",
+    "navigation"
+  ]
+}
