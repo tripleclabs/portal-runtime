@@ -92,6 +92,7 @@ var PortalRuntime = class {
     this.win = options.window;
     this.doc = this.win.document;
     this.serverShell = this.shell(this.doc);
+    this.serverStructure = this.structure(this.doc);
     this.fetcher = options.fetch ?? this.win.fetch.bind(this.win);
     this.hard = options.hardNavigate ?? ((url) => this.win.location.assign(url));
     this.pageURL = this.win.location.href;
@@ -113,6 +114,7 @@ var PortalRuntime = class {
   fetcher;
   hard;
   serverShell;
+  serverStructure;
   epoch = 0;
   navigationAttempt = 0;
   historyIndex = 0;
@@ -254,7 +256,14 @@ var PortalRuntime = class {
       });
       const html = await response.text();
       if (!request.isCurrent()) return;
-      const destination = response.url || url.href;
+      if (response.redirected) {
+        this.invalidate();
+        this.hard(url.href);
+        return;
+      }
+      const destinationURL = new URL(response.url || url.href);
+      destinationURL.hash = url.hash;
+      const destination = destinationURL.href;
       if (!this.internal(new URL(destination))) {
         this.invalidate();
         this.hard(destination);
@@ -323,8 +332,18 @@ var PortalRuntime = class {
     }
     return body.outerHTML;
   }
+  structure(page) {
+    const root = page.documentElement.cloneNode(false);
+    root.removeAttribute("lang");
+    root.removeAttribute("dir");
+    const head = page.head.cloneNode(true);
+    for (const node of head.querySelectorAll(
+      'title, meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"]'
+    )) node.remove();
+    return root.outerHTML + head.outerHTML;
+  }
   pageCompatible(page) {
-    if (page.documentElement.dataset.portalContext !== this.context || page.documentElement.dataset.portalVersion !== this.version || page.querySelectorAll(PAGE).length !== 1 || this.shell(page) !== this.serverShell)
+    if (page.documentElement.dataset.portalContext !== this.context || page.documentElement.dataset.portalVersion !== this.version || page.querySelectorAll(PAGE).length !== 1 || this.shell(page) !== this.serverShell || this.structure(page) !== this.serverStructure)
       return false;
     const assets = (doc) => Array.from(
       doc.querySelectorAll(

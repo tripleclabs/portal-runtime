@@ -35,6 +35,7 @@ export class PortalRuntime {
   private readonly fetcher: typeof fetch;
   private readonly hard: (url: string) => void;
   private readonly serverShell: string;
+  private readonly serverStructure: string;
   private epoch = 0;
   private navigationAttempt = 0;
   private historyIndex = 0;
@@ -50,6 +51,7 @@ export class PortalRuntime {
     this.win = options.window;
     this.doc = this.win.document;
     this.serverShell = this.shell(this.doc);
+    this.serverStructure = this.structure(this.doc);
     this.fetcher = options.fetch ?? this.win.fetch.bind(this.win);
     this.hard =
       options.hardNavigate ?? ((url) => this.win.location.assign(url));
@@ -219,7 +221,16 @@ export class PortalRuntime {
       });
       const html = await response.text();
       if (!request.isCurrent()) return;
-      const destination = response.url || url.href;
+      // Fetch strips fragments, including redirect Location fragments. Let the
+      // browser resolve redirected GETs; never guess their final anchor.
+      if (response.redirected) {
+        this.invalidate();
+        this.hard(url.href);
+        return;
+      }
+      const destinationURL = new URL(response.url || url.href);
+      destinationURL.hash = url.hash;
+      const destination = destinationURL.href;
       if (!this.internal(new URL(destination))) {
         this.invalidate();
         this.hard(destination);
@@ -296,12 +307,24 @@ export class PortalRuntime {
     }
     return body.outerHTML;
   }
+  private structure(page: Document): string {
+    const root = page.documentElement.cloneNode(false) as HTMLElement;
+    root.removeAttribute("lang");
+    root.removeAttribute("dir");
+    const head = page.head.cloneNode(true) as HTMLHeadElement;
+    // Only metadata explicitly synchronized by replacePage may differ.
+    for (const node of head.querySelectorAll(
+      'title, meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"]',
+    )) node.remove();
+    return root.outerHTML + head.outerHTML;
+  }
   private pageCompatible(page: Document): boolean {
     if (
       page.documentElement.dataset.portalContext !== this.context ||
       page.documentElement.dataset.portalVersion !== this.version ||
       page.querySelectorAll(PAGE).length !== 1 ||
-      this.shell(page) !== this.serverShell
+      this.shell(page) !== this.serverShell ||
+      this.structure(page) !== this.serverStructure
     )
       return false;
     // Asset/layout changes get native navigation rather than partially loading code.

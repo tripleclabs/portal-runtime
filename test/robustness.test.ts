@@ -504,3 +504,45 @@ it("unchanged server shell preserves live client mutations and ordinary head upd
   expect(document.title).toBe("Next title");
   expect(document.querySelector("h1")?.textContent).toBe("Next");
 });
+it("preserves cross-page fragments omitted by fetch response URLs", async () => {
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  const result = response(html('<h1>Next</h1><div id="details">Details</div>'));
+  Object.defineProperty(result, "url", { value: "http://localhost:3000/next" });
+  runtime = new PortalRuntime({ window, fetch: async () => result });
+  runtime.start();
+  await runtime.navigate("/next#details");
+  expect(location.hash).toBe("#details");
+  expect(scroll).toHaveBeenCalledOnce();
+});
+it("delegates redirected GET fragment resolution to native navigation", async () => {
+  const result = response(html("Next"));
+  Object.defineProperties(result, {
+    url: { value: "http://localhost:3000/final" },
+    redirected: { value: true },
+  });
+  const hard = vi.fn();
+  runtime = new PortalRuntime({ window, hardNavigate: hard, fetch: async () => result });
+  runtime.start();
+  await runtime.navigate("/redirect#details");
+  expect(hard).toHaveBeenCalledWith("http://localhost:3000/redirect#details");
+});
+it.each([
+  ['root attributes', (value: string) => value.replace('<html ', '<html class="dark" ')],
+  ['base URL', (value: string) => value.replace('<head>', '<head><base href="/other/">')],
+])("falls back when server %s change", async (_name, transform) => {
+  const hard = vi.fn();
+  runtime = new PortalRuntime({ window, hardNavigate: hard, fetch: async () => response(transform(html("Next"))) });
+  runtime.start();
+  await runtime.navigate("/next");
+  expect(hard).toHaveBeenCalledWith("http://localhost:3000/next");
+});
+it("preserves local root mutations when the server root is unchanged", async () => {
+  const hard = vi.fn();
+  runtime = new PortalRuntime({ window, hardNavigate: hard, fetch: async () => response(html("Next")) });
+  runtime.start();
+  document.documentElement.className = "local-theme";
+  await runtime.navigate("/next");
+  expect(hard).not.toHaveBeenCalled();
+  expect(document.documentElement.className).toBe("local-theme");
+});

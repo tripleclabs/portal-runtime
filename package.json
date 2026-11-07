@@ -1,6 +1,6 @@
 {
   "name": "@wearecococo/portal-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "State and progressive navigation for server-rendered DataXML and Lua sites",
   "exports": {

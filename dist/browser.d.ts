@@ -26,6 +26,7 @@ export declare class PortalRuntime {
     private readonly fetcher;
     private readonly hard;
     private readonly serverShell;
+    private readonly serverStructure;
     private epoch;
     private navigationAttempt;
     private historyIndex;
@@ -53,6 +54,7 @@ export declare class PortalRuntime {
     /** Compare incoming server layout with the original server layout, not live
      * DOM: client-owned edits in a compatible persistent shell must survive. */
     private shell;
+    private structure;
     private pageCompatible;
     private replacePage;
     private restoreFocusAndScroll;
