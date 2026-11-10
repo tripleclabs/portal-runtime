@@ -1,6 +1,6 @@
 {
   "name": "@wearecococo/portal-runtime",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "State and progressive navigation for server-rendered DataXML and Lua sites",
   "exports": {
@@ -28,7 +28,7 @@
     "build": "tsc -p tsconfig.json && node --experimental-strip-types scripts/build-browser.ts",
     "test": "vitest run --config vitest.config.ts",
     "check": "tsc -p tsconfig.test.json",
-    "test:browser": "pnpm build && node --experimental-strip-types scripts/browser-smoke.ts",
+    "test:browser": "pnpm build && node --experimental-strip-types scripts/browser-smoke.ts && node --experimental-strip-types scripts/mount-browser.ts && node --experimental-strip-types scripts/commerce-browser.ts",
     "test:package": "node --experimental-strip-types scripts/package-smoke.ts"
   },
   "packageManager": "pnpm@11.22.0",

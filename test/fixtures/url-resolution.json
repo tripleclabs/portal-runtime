@@ -1,0 +1,217 @@
+[
+  {
+    "name": "root-page",
+    "kind": "page",
+    "value": "/orders",
+    "expected": "/preview/orders?site=shop&version=draft"
+  },
+  {
+    "name": "already-mounted",
+    "kind": "page",
+    "value": "/preview/orders",
+    "expected": "/preview/orders?site=shop&version=draft"
+  },
+  {
+    "name": "relative",
+    "kind": "page",
+    "value": "receipt",
+    "expected": "/preview/orders/receipt?site=shop&version=draft"
+  },
+  {
+    "name": "parent",
+    "kind": "page",
+    "value": "../catalog",
+    "expected": "/preview/catalog?site=shop&version=draft"
+  },
+  {
+    "name": "dot",
+    "kind": "page",
+    "value": ".",
+    "expected": "/preview/orders/?site=shop&version=draft"
+  },
+  {
+    "name": "parent-directory",
+    "kind": "page",
+    "value": "..",
+    "expected": "/preview/?site=shop&version=draft"
+  },
+  {
+    "name": "query",
+    "kind": "page",
+    "value": "?q=a%2Fb&q=c#result",
+    "expected": "/preview/orders/123?q=a%2Fb&q=c&site=shop&version=draft#result"
+  },
+  {
+    "name": "selection-override",
+    "kind": "page",
+    "value": "/orders?version=wrong&site=wrong&x=1",
+    "expected": "/preview/orders?x=1&site=shop&version=draft"
+  },
+  {
+    "name": "fragment",
+    "kind": "page",
+    "value": "#quote",
+    "expected": "#quote"
+  },
+  {
+    "name": "external",
+    "kind": "page",
+    "value": "https://other.test/orders?version=x#q",
+    "expected": "https://other.test/orders?version=x#q"
+  },
+  {
+    "name": "protocol-relative",
+    "kind": "page",
+    "value": "//other.test/path",
+    "expected": "//other.test/path"
+  },
+  {
+    "name": "mailto",
+    "kind": "page",
+    "value": "mailto:orders@example.test",
+    "expected": "mailto:orders@example.test"
+  },
+  {
+    "name": "asset",
+    "kind": "asset",
+    "value": "/styles/site.css",
+    "expected": "/preview/styles/site.css"
+  },
+  {
+    "name": "unicode",
+    "kind": "asset",
+    "value": "/images/café cover.png",
+    "expected": "/preview/images/caf%C3%A9%20cover.png"
+  },
+  {
+    "name": "api",
+    "kind": "api",
+    "value": "orders?next=/",
+    "expected": "/preview/api/orders?next=/"
+  },
+  {
+    "name": "api-root",
+    "kind": "api",
+    "value": "",
+    "expected": "/preview/api"
+  },
+  {
+    "name": "api-root-query",
+    "kind": "api",
+    "value": "/?q=1",
+    "expected": "/preview/api?q=1"
+  },
+  {
+    "name": "api-trailing",
+    "kind": "api",
+    "value": "orders/",
+    "expected": "/preview/api/orders/"
+  },
+  {
+    "name": "action",
+    "kind": "action",
+    "value": "save",
+    "expected": "/preview/_portal/actions/save?returnTo=%2Forders%2F123"
+  },
+  {
+    "name": "reject /../outside",
+    "kind": "page",
+    "value": "/../outside",
+    "error": true
+  },
+  {
+    "name": "reject ../../outside",
+    "kind": "page",
+    "value": "../../outside",
+    "error": true
+  },
+  {
+    "name": "reject /preview/../outside",
+    "kind": "page",
+    "value": "/preview/../outside",
+    "error": true
+  },
+  {
+    "name": "reject /%2e%2e/outside",
+    "kind": "page",
+    "value": "/%2e%2e/outside",
+    "error": true
+  },
+  {
+    "name": "reject /%2Foutside",
+    "kind": "page",
+    "value": "/%2Foutside",
+    "error": true
+  },
+  {
+    "name": "reject /%5coutside",
+    "kind": "page",
+    "value": "/%5coutside",
+    "error": true
+  },
+  {
+    "name": "reject /%252e%252e/outside",
+    "kind": "page",
+    "value": "/%252e%252e/outside",
+    "error": true
+  },
+  {
+    "name": "reject /a//b",
+    "kind": "page",
+    "value": "/a//b",
+    "error": true
+  },
+  {
+    "name": "reject javascript:alert(1)",
+    "kind": "page",
+    "value": "javascript:alert(1)",
+    "error": true
+  },
+  {
+    "name": "reject  /orders",
+    "kind": "page",
+    "value": " /orders",
+    "error": true
+  },
+  {
+    "name": "reject /broken%zz",
+    "kind": "page",
+    "value": "/broken%zz",
+    "error": true
+  },
+  {
+    "name": "trailing current directory",
+    "kind": "page",
+    "value": "child",
+    "currentPath": "/orders/",
+    "expected": "/preview/orders/child?site=shop&version=draft"
+  },
+  {
+    "name": "public root",
+    "kind": "page",
+    "value": "/orders",
+    "basePath": "/",
+    "selection": {},
+    "expected": "/orders"
+  },
+  {
+    "name": "empty current query",
+    "kind": "page",
+    "value": "",
+    "currentPath": "/orders/123?category=print",
+    "expected": "/preview/orders/123?category=print&site=shop&version=draft"
+  },
+  {
+    "name": "action returns current query",
+    "kind": "action",
+    "value": "save",
+    "currentPath": "/orders/123?category=print",
+    "expected": "/preview/_portal/actions/save?returnTo=%2Forders%2F123%3Fcategory%3Dprint"
+  },
+  {
+    "name": "external custom scheme",
+    "kind": "page",
+    "value": "sms:+123456",
+    "expected": "sms:+123456"
+  }
+]

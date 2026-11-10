@@ -65,7 +65,7 @@ This bundle is also exported as `@wearecococo/portal-runtime/browser`. The `/aut
 
 ## Scope and compatibility
 
-Version 0.1 is an early API. Breaking API or HTTP-contract changes require a minor version bump until 1.0; fixes that preserve the contract use patch versions. Pin a commit and read the [changelog](CHANGELOG.md) when upgrading.
+Version 0.2 is an early API. Breaking API or HTTP-contract changes require a minor version bump until 1.0; fixes that preserve the contract use patch versions. Pin a commit and read the [changelog](CHANGELOG.md) when upgrading.
 
 The browser target is ES2022 with modern DOM APIs, including Fetch, AbortController, and FormData submitter support. Chromium is exercised in CI; other browser engines are not yet qualified. Node.js 22.18+ is required for development, not for serving the browser bundle.
 
@@ -88,3 +88,24 @@ CI runs the same checks from a clean checkout and verifies that committed build 
 ## License
 
 [MIT](LICENSE), copyright Triple C Labs GmbH. See [source provenance](PROVENANCE.md).
+
+## Mount-aware URLs
+
+The same page can live at `/` publicly or beneath `/portals/example` in a host.
+Use `runtime.urls` for custom browser requests, or the pure exported helper:
+
+```ts
+import { PortalURLs } from '@wearecococo/portal-runtime';
+const urls = new PortalURLs({ basePath: '/portals/example', currentPath: '/orders/123' });
+urls.page('/orders');    // /portals/example/orders
+urls.asset('/logo.svg'); // /portals/example/logo.svg
+urls.api('orders/123');  // /portals/example/api/orders/123
+urls.action('save');     // mounted action with encoded logical returnTo
+```
+
+Standard HTML attributes are resolved by the server after DataXML expansion.
+Page navigation preserves host-selected preview context; assets and endpoints
+remain separate. See the [mount contract](docs/host-contract.md#mount-aware-urls)
+for relative paths, native forms, explicit asset links and security boundaries.
+
+For frame navigation, live commerce forms and accessible local controls, see [commerce interactions](docs/commerce.md).

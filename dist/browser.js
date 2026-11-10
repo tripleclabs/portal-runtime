@@ -1,5 +1,13 @@
 import { FormActivity, RequestScope, StateStore } from "./state.js";
+import { PortalURLs } from "./urls.js";
+import { PortalBehaviors } from "./behaviors.js";
 const PAGE = "[data-portal-page]";
+const ICONS = "style[data-portal-icons]";
+const COMPONENTS = "style[data-portal-components]";
+const INSTANCE_FORM = "form[data-portal-instance]";
+/** A component instance (`c3`) or one of its live parts (`c3-total`). */
+const INSTANCE = /^c[1-9][0-9]*$/;
+const CHANGE_DEBOUNCE = 250;
 const HISTORY = "__portalPosition";
 const INDEX = "__portalIndex";
 /** Enhances ordinary SSR HTML. It never evaluates template expressions or Lua. */
@@ -17,6 +25,18 @@ export class PortalRuntime {
     doc;
     fetcher;
     hard;
+    routing;
+    behaviors;
+    composing = new WeakSet();
+    /** Per instance: the pending debounce and the in-flight live change. */
+    changes = new Map();
+    historyRequest = 0;
+    awaitingNavigation = false;
+    /** URL helpers follow the current logical page after enhanced navigation. */
+    get urls() {
+        return new PortalURLs({ basePath: this.routing.basePath, selection: this.routing.selection,
+            currentPath: this.routing.unmount(this.win.location.pathname + this.win.location.search) });
+    }
     serverShell;
     serverStructure;
     epoch = 0;
@@ -34,6 +54,12 @@ export class PortalRuntime {
         this.options = options;
         this.win = options.window;
         this.doc = this.win.document;
+        this.behaviors = new PortalBehaviors(this.doc);
+        const selection = JSON.parse(this.doc.documentElement.dataset.portalSelection ?? "{}");
+        if (!selection || typeof selection !== "object" || Array.isArray(selection))
+            throw new Error("Invalid Portal selection metadata");
+        this.routing = new PortalURLs({ basePath: this.doc.documentElement.dataset.portalBase ?? "/", selection: selection });
+        this.routing.unmount(this.win.location.pathname);
         this.serverShell = this.shell(this.doc);
         this.serverStructure = this.structure(this.doc);
         this.fetcher = options.fetch ?? this.win.fetch.bind(this.win);
@@ -59,6 +85,10 @@ export class PortalRuntime {
         this.doc.addEventListener("click", this.click);
         this.doc.addEventListener("submit", this.submit);
         this.doc.addEventListener("input", this.input);
+        this.doc.addEventListener("change", this.input);
+        this.doc.addEventListener("compositionstart", this.compositionStart);
+        this.doc.addEventListener("compositionend", this.compositionEnd);
+        this.behaviors.start();
         this.win.addEventListener("popstate", this.pop);
         this.win.addEventListener("scroll", this.savePosition);
         this.savePosition();
@@ -70,6 +100,10 @@ export class PortalRuntime {
         this.doc.removeEventListener("click", this.click);
         this.doc.removeEventListener("submit", this.submit);
         this.doc.removeEventListener("input", this.input);
+        this.doc.removeEventListener("change", this.input);
+        this.doc.removeEventListener("compositionstart", this.compositionStart);
+        this.doc.removeEventListener("compositionend", this.compositionEnd);
+        this.behaviors.dispose();
         this.win.removeEventListener("popstate", this.pop);
         this.win.removeEventListener("scroll", this.savePosition);
         this.win.history.scrollRestoration = this.oldScrollRestoration;
@@ -77,9 +111,12 @@ export class PortalRuntime {
     /** Host calls before an identity switch; no previous response can then apply. */
     invalidate() {
         ++this.epoch;
+        ++this.historyRequest;
         ++this.navigationAttempt;
         this.transitioning = false;
+        this.awaitingNavigation = false;
         this.requests.reset();
+        this.behaviors.reset();
         for (const [element, form] of this.forms) {
             form.invalidate();
             element.removeAttribute("aria-busy");
@@ -92,6 +129,11 @@ export class PortalRuntime {
         for (const timer of this.timers.values())
             clearTimeout(timer);
         this.timers.clear();
+        for (const change of this.changes.values()) {
+            clearTimeout(change.timer);
+            change.controller?.abort();
+        }
+        this.changes.clear();
         this.state.set({ navigating: false, error: null });
     }
     savePosition = () => {
@@ -124,6 +166,7 @@ export class PortalRuntime {
         const link = target?.closest("a[href]");
         if (!link ||
             link.hasAttribute("download") ||
+            ["asset", "endpoint"].includes(link.dataset.portalUrlKind ?? "") ||
             (link.target && link.target !== "_self") ||
             link.closest("[data-portal-native]"))
             return;
@@ -135,24 +178,46 @@ export class PortalRuntime {
             url.hash)
             return;
         event.preventDefault();
-        void this.navigate(url.href);
+        if (link.dataset.portalTarget) {
+            void this.refreshRegion(link.dataset.portalTarget, url.href, this.historyPolicy(link)).catch(error => this.failure(link, error));
+        }
+        else
+            void this.navigate(url.href);
     };
+    endpoint(url) {
+        const path = this.routing.unmount(url.pathname);
+        return path === "/api" || path.startsWith("/api/") || path === "/mcp" || path.startsWith("/_portal/");
+    }
+    selectPage(url) {
+        if (!this.endpoint(url)) {
+            url.search = new URL(this.urls.page(url.pathname + url.search + url.hash), this.win.location.href).search;
+        }
+    }
     internal(url) {
-        return (url.origin === this.win.location.origin &&
-            ["http:", "https:"].includes(url.protocol));
+        if (url.origin !== this.win.location.origin || !["http:", "https:"].includes(url.protocol))
+            return false;
+        try {
+            this.routing.unmount(url.pathname);
+            return true;
+        }
+        catch {
+            return false;
+        }
     }
     async navigate(href, mode = "push", position, targetIndex) {
         if (this.disposed)
             return;
-        const url = new URL(href, this.win.location.href);
+        const url = new URL(this.urls.asset(href), this.win.location.href);
         if (!this.internal(url)) {
             this.hard(url.href);
             return;
         }
+        this.selectPage(url);
         this.requests.cancel("navigation");
         this.transitioning = mode === "pop";
         const attempt = ++this.navigationAttempt;
         let allowed;
+        this.awaitingNavigation = true;
         try {
             allowed =
                 !this.options.beforeNavigate || (await this.options.beforeNavigate());
@@ -163,6 +228,10 @@ export class PortalRuntime {
                 this.failure(this.doc.documentElement, error);
             }
             return;
+        }
+        finally {
+            if (attempt === this.navigationAttempt)
+                this.awaitingNavigation = false;
         }
         if (attempt !== this.navigationAttempt)
             return;
@@ -275,25 +344,67 @@ export class PortalRuntime {
         root.removeAttribute("lang");
         root.removeAttribute("dir");
         const head = page.head.cloneNode(true);
-        // Only metadata explicitly synchronized by replacePage may differ.
-        for (const node of head.querySelectorAll('title, meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"]'))
+        // Only metadata explicitly synchronized by replacePage may differ, and the
+        // host's per-page icon rules, which adoptIcons merges.
+        for (const node of head.querySelectorAll(`title, meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"], ${ICONS}, ${COMPONENTS}`))
             node.remove();
         return root.outerHTML + head.outerHTML;
     }
+    routingCompatible(root) {
+        try {
+            const selection = JSON.parse(root.dataset.portalSelection ?? "{}");
+            const incoming = new PortalURLs({ basePath: root.dataset.portalBase ?? "/", selection });
+            return incoming.basePath === this.routing.basePath &&
+                JSON.stringify(Object.entries(incoming.selection).sort()) === JSON.stringify(Object.entries(this.routing.selection).sort());
+        }
+        catch {
+            return false;
+        }
+    }
     pageCompatible(page) {
-        if (page.documentElement.dataset.portalContext !== this.context ||
+        if (!this.routingCompatible(page.documentElement) ||
+            page.documentElement.dataset.portalContext !== this.context ||
             page.documentElement.dataset.portalVersion !== this.version ||
             page.querySelectorAll(PAGE).length !== 1 ||
             this.shell(page) !== this.serverShell ||
             this.structure(page) !== this.serverStructure)
             return false;
         // Asset/layout changes get native navigation rather than partially loading code.
-        const assets = (doc) => Array.from(doc.querySelectorAll('head link[rel="stylesheet"], head style, head meta[charset], head meta[name="viewport"], script[src]'))
+        const assets = (doc) => Array.from(doc.querySelectorAll('head link[rel="stylesheet"], head style:not([data-portal-icons]):not([data-portal-components]), head meta[charset], head meta[name="viewport"], script[src]'))
             .map((node) => node.outerHTML)
             .join("");
         return assets(page) === assets(this.doc);
     }
+    /** The host inlines only the icon mask rules a response uses, one per line,
+     * in style[data-portal-icons] (a page's head, or beside a region's root).
+     * Merge them into the live page so swapped-in content keeps its icons. */
+    adoptIcons(source) {
+        this.adoptRules(source, ICONS, "data-portal-icons");
+    }
+    /** Likewise for the CSS of the components a response renders
+     * (style[data-portal-components], one component per line). */
+    adoptComponentStyles(source) {
+        this.adoptRules(source, COMPONENTS, "data-portal-components");
+    }
+    adoptRules(source, selector, attribute) {
+        const incoming = Array.from(source.querySelectorAll(selector)).flatMap((node) => (node.textContent ?? "").split("\n")).filter(Boolean);
+        if (!incoming.length)
+            return;
+        let live = this.doc.head.querySelector(selector);
+        const present = (live?.textContent ?? "").split("\n").filter(Boolean);
+        const missing = [...new Set(incoming)].filter((rule) => !present.includes(rule));
+        if (!missing.length)
+            return;
+        if (!live) {
+            live = this.doc.createElement("style");
+            live.setAttribute(attribute, "");
+            this.doc.head.append(live);
+        }
+        live.textContent = [...present, ...missing].join("\n");
+    }
     replacePage(page) {
+        this.adoptIcons(page);
+        this.adoptComponentStyles(page);
         this.doc
             .querySelector(PAGE)
             .replaceWith(this.doc.importNode(page.querySelector(PAGE), true));
@@ -305,6 +416,7 @@ export class PortalRuntime {
             node.remove();
         for (const node of page.head.querySelectorAll(metadata))
             this.doc.head.append(this.doc.importNode(node, true));
+        this.behaviors.refresh();
         this.doc.dispatchEvent(new CustomEvent("portal:navigated"));
     }
     restoreFocusAndScroll(position, hash = "") {
@@ -335,6 +447,7 @@ export class PortalRuntime {
         const form = event.target;
         if (event.defaultPrevented ||
             form.tagName !== "FORM" ||
+            ["asset", "endpoint"].includes(form.dataset.portalUrlKind ?? "") ||
             form.closest("[data-portal-native]"))
             return;
         const submitter = event.submitter;
@@ -350,14 +463,19 @@ export class PortalRuntime {
             return;
         event.preventDefault();
         const data = new FormData(form, submitter);
-        const region = form.dataset.portalTarget;
+        // A component event re-renders its own instance in place.
+        const region = form.dataset.portalTarget ?? this.eventInstance(form);
         if (method === "GET") {
             url.search = "";
             for (const [key, value] of data)
                 if (typeof value === "string")
                     url.searchParams.append(key, value);
+            if (!this.endpoint(url)) {
+                for (const [key, value] of Object.entries(this.routing.selection))
+                    url.searchParams.set(key, value);
+            }
             if (region)
-                void this.refreshRegion(region, url.href).catch((error) => this.failure(form, error));
+                void this.refreshRegion(region, url.href, this.historyPolicy(form)).catch((error) => this.failure(form, error));
             else
                 void this.navigate(url.href);
         }
@@ -373,10 +491,171 @@ export class PortalRuntime {
             void this.postForm(form, url, body, region);
         }
     };
+    historyPolicy(element) {
+        const policy = element.dataset.portalHistory ?? "none";
+        if (!["none", "replace", "advance"].includes(policy))
+            throw new Error("Invalid Portal history policy");
+        return policy;
+    }
+    compositionStart = (event) => {
+        const form = event.target.form;
+        if (form) {
+            this.composing.add(form);
+            clearTimeout(this.timers.get(form));
+            this.timers.delete(form);
+        }
+    };
+    compositionEnd = (event) => {
+        const form = event.target.form;
+        if (form)
+            this.composing.delete(form);
+        this.input(event);
+    };
+    /** The instance a component event form belongs to: its hidden instance form,
+     * or an author's t:submit form inside the instance. */
+    eventInstance(form) {
+        if (form.matches(INSTANCE_FORM))
+            return INSTANCE.test(form.id) ? form.id : undefined;
+        if (!form.querySelector('input[name="_portal_instance"]'))
+            return undefined;
+        return this.instanceRoot(form)?.dataset.portalRegion;
+    }
+    instanceRoot(element) {
+        let region = element.closest("[data-portal-region]");
+        while (region && !INSTANCE.test(region.dataset.portalRegion ?? ""))
+            region = region.parentElement?.closest("[data-portal-region]") ?? null;
+        return region ?? undefined;
+    }
+    /** t:change: debounce, then post the instance form for its live parts only.
+     * A newer change aborts the request in flight, so a slow response never
+     * overwrites a newer one. */
+    scheduleChange(container) {
+        const root = this.instanceRoot(container);
+        const instance = root?.dataset.portalRegion;
+        const exportName = container.dataset.portalChange;
+        if (!instance || !exportName)
+            return;
+        const form = this.doc.getElementById(instance);
+        if (!(form instanceof HTMLFormElement) || !form.matches(INSTANCE_FORM))
+            return;
+        const state = this.changes.get(instance) ?? {};
+        clearTimeout(state.timer);
+        state.timer = setTimeout(() => {
+            state.timer = undefined;
+            void this.postChange(instance, exportName, container);
+        }, CHANGE_DEBOUNCE);
+        this.changes.set(instance, state);
+    }
+    async postChange(instance, exportName, container) {
+        const form = this.doc.getElementById(instance);
+        const state = this.changes.get(instance);
+        if (this.disposed || !state || !(form instanceof HTMLFormElement))
+            return;
+        state.controller?.abort();
+        const controller = new AbortController();
+        state.controller = controller;
+        const epoch = this.epoch;
+        const body = new URLSearchParams();
+        for (const [key, value] of new FormData(form))
+            if (typeof value === "string")
+                body.append(key, value);
+        body.set("_portal_export", exportName);
+        body.set("_portal_region", instance);
+        const current = () => !controller.signal.aborted && state.controller === controller && epoch === this.epoch;
+        try {
+            const response = await this.fetcher(new URL(form.action, this.win.location.href).href, {
+                method: "POST",
+                body,
+                signal: controller.signal,
+                credentials: "same-origin",
+                headers: {
+                    "X-Portal-Request": "region",
+                    "X-Portal-Context": this.context,
+                    "X-Portal-Version": this.version,
+                    Accept: "text/html",
+                },
+            });
+            const html = await response.text();
+            if (!current())
+                return;
+            if (response.status === 409 || response.status === 401 || !this.compatible(response)) {
+                this.invalidate();
+                this.hard(this.win.location.href);
+                return;
+            }
+            if (!response.ok && response.status !== 422)
+                throw new Error(`Component event failed (${response.status})`);
+            const parsed = this.parse(html);
+            if (this.isWholePage(html)) {
+                if (!this.pageCompatible(parsed)) {
+                    this.invalidate();
+                    this.hard(this.win.location.href);
+                    return;
+                }
+                this.replacePage(parsed);
+                return;
+            }
+            const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
+            if (!this.routingCompatible(metadata))
+                throw new Error("Region response changed Portal routing context");
+            this.adoptIcons(parsed);
+            this.adoptComponentStyles(parsed);
+            this.replaceLiveParts(instance, parsed);
+            this.adoptInstanceForms(parsed);
+            this.behaviors.refresh();
+            this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name: instance } }));
+        }
+        catch (error) {
+            if (current())
+                this.failure(container, error);
+        }
+        finally {
+            if (state.controller === controller)
+                state.controller = undefined;
+        }
+    }
+    /** A complete document rather than a region fragment. */
+    isWholePage(html) {
+        return /^\s*<!doctype html>/i.test(html);
+    }
+    /** Swap an instance's live parts, never one holding the focused control. */
+    replaceLiveParts(instance, parsed) {
+        const active = this.doc.activeElement;
+        for (const part of Array.from(this.doc.querySelectorAll("[data-portal-region]"))) {
+            const name = part.dataset.portalRegion ?? "";
+            if (!name.startsWith(instance + "-") || (active && part.contains(active)))
+                continue;
+            const replacement = this.region(parsed, name);
+            if (replacement)
+                part.replaceWith(this.doc.importNode(replacement, true));
+        }
+    }
+    /** A response's instance forms carry fresh tokens: replace or add them. */
+    adoptInstanceForms(parsed) {
+        for (const incoming of Array.from(parsed.querySelectorAll(INSTANCE_FORM))) {
+            const existing = incoming.id ? this.doc.getElementById(incoming.id) : null;
+            const imported = this.doc.importNode(incoming, true);
+            if (existing instanceof HTMLFormElement && existing.matches(INSTANCE_FORM)) {
+                this.forms.get(existing)?.invalidate();
+                this.forms.delete(existing);
+                existing.replaceWith(imported);
+            }
+            else
+                this.doc.querySelector(PAGE)?.append(imported);
+        }
+    }
     input = (event) => {
+        const changed = event.target?.closest?.("[data-portal-change]");
+        if (changed && !event.isComposing) {
+            this.scheduleChange(changed);
+            return;
+        }
+        if (event.type === "change")
+            return;
         const control = event.target;
         const form = control.form;
         if (!form?.hasAttribute("data-portal-live") ||
+            this.composing.has(form) || event.isComposing ||
             form.method.toUpperCase() !== "GET" ||
             !form.dataset.portalTarget)
             return;
@@ -388,16 +667,27 @@ export class PortalRuntime {
                 form.requestSubmit();
         }, Number.isFinite(delay) ? Math.max(0, Math.min(delay, 2000)) : 150));
     };
-    async refreshRegion(name, href) {
+    async refreshRegion(name, href, history = "none") {
         if (this.disposed)
             return;
-        const url = new URL(href, this.win.location.href);
+        const url = new URL(this.urls.asset(href), this.win.location.href);
         if (!this.internal(url))
-            throw new Error("Region URL must be same-origin");
+            throw new Error("Region URL must be inside the Portal mount");
+        this.selectPage(url);
         const target = this.region(this.doc, name);
         if (!target)
             throw new Error("Region target must be unique");
+        if (!["none", "replace", "advance"].includes(history))
+            throw new Error("Invalid Portal history policy");
+        // A URL-changing frame click is a newer navigation intent. If a page
+        // transition (including its host approval) is pending, use the normal
+        // navigation owner so old responses/prompts cannot overwrite this intent.
+        if (history !== "none" && (this.transitioning || this.awaitingNavigation)) {
+            return this.navigate(url.href, history === "replace" ? "replace" : "push");
+        }
+        const historyRequest = history === "none" ? 0 : ++this.historyRequest;
         const request = this.requests.begin(`region:${name}`);
+        this.feedback(name, "loading");
         target.setAttribute("aria-busy", "true");
         try {
             const response = await this.fetcher(url.href, {
@@ -419,9 +709,26 @@ export class PortalRuntime {
                 this.hard(this.win.location.href);
                 return;
             }
+            if (response.url && !this.internal(new URL(response.url)))
+                throw new Error("Region redirect left the Portal mount");
             if (!response.ok)
                 throw new Error(`Region request failed (${response.status})`);
+            if (history !== "none" && historyRequest !== this.historyRequest)
+                return;
             this.replaceRegion(name, html);
+            if (history !== "none") {
+                const destination = response.url ? new URL(response.url) : new URL(url);
+                if (!response.redirected)
+                    destination.hash = url.hash;
+                if (history === "advance") {
+                    this.savePosition();
+                    this.win.history.pushState({ [INDEX]: ++this.historyIndex }, "", destination.href);
+                }
+                else
+                    this.win.history.replaceState({ ...this.win.history.state, [INDEX]: this.historyIndex }, "", destination.href);
+                this.pageURL = destination.href;
+            }
+            this.feedback(name, "success");
         }
         catch (error) {
             if (request.isCurrent())
@@ -439,15 +746,29 @@ export class PortalRuntime {
     }
     replaceRegion(name, html) {
         const target = this.region(this.doc, name);
-        const replacement = this.region(this.parse(html), name);
+        const parsed = this.parse(html);
+        const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
+        if (!this.routingCompatible(metadata))
+            throw new Error("Region response changed Portal routing context");
+        const replacement = this.region(parsed, name);
         if (!target || !replacement)
             throw new Error("Region response must contain one matching root");
         const active = this.doc.activeElement;
         // Forms should be siblings of their result region. Never destroy live input.
         if (active &&
             target.contains(active) &&
-            active.matches("input,textarea,select"))
-            throw new Error("Cannot replace a region containing the focused input");
+            active.matches("input,textarea,select")) {
+            if (!INSTANCE.test(name))
+                throw new Error("Cannot replace a region containing the focused input");
+            // A component instance keeps the control being edited and updates its live parts.
+            this.adoptIcons(parsed);
+            this.adoptComponentStyles(parsed);
+            this.replaceLiveParts(name, parsed);
+            this.adoptInstanceForms(parsed);
+            this.behaviors.refresh();
+            this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name } }));
+            return;
+        }
         for (const child of target.querySelectorAll("[data-portal-region]")) {
             if (child.dataset.portalRegion)
                 this.requests.cancel(`region:${child.dataset.portalRegion}`);
@@ -462,7 +783,11 @@ export class PortalRuntime {
             }
         }
         replacement.removeAttribute("aria-busy");
+        this.adoptIcons(parsed);
+        this.adoptComponentStyles(parsed);
         target.replaceWith(this.doc.importNode(replacement, true));
+        this.adoptInstanceForms(parsed);
+        this.behaviors.refresh();
         this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name } }));
     }
     async postForm(form, url, data, region) {
@@ -489,6 +814,7 @@ export class PortalRuntime {
         if (region)
             data.set("_portal_region", region);
         form.setAttribute("aria-busy", "true");
+        this.feedback(region ?? "page", "loading");
         const controls = this.lockForm(form);
         await activity.submit(async () => {
             const response = await this.fetcher(url.href, {
@@ -518,9 +844,12 @@ export class PortalRuntime {
                 this.hard(response.redirected ? response.url : this.win.location.href);
                 return;
             }
-            if (region && !response.redirected) {
+            // A component event answers with the whole page when its instance
+            // moved or disappeared (for example, the export removed it from a list).
+            if (region && !response.redirected && !this.isWholePage(html)) {
                 this.requests.cancel(`region:${region}`);
                 this.replaceRegion(region, html);
+                this.feedback(region, "success");
             }
             else {
                 const page = this.parse(html);
@@ -536,6 +865,7 @@ export class PortalRuntime {
                 if (response.redirected)
                     this.pageURL = response.url;
                 this.restoreFocusAndScroll();
+                this.feedback("page", "success");
             }
         });
         this.unlockForm(form, controls);
@@ -561,7 +891,19 @@ export class PortalRuntime {
             control.disabled = false;
         this.formLocks.delete(form);
     }
+    feedback(name, state) {
+        for (const outlet of this.doc.querySelectorAll("[data-portal-status]")) {
+            if (outlet.dataset.portalStatus !== name)
+                continue;
+            const fallback = state === "loading" ? "Loading…" : state === "error" ? "Unable to update. Please try again." : "Updated.";
+            outlet.setAttribute("role", "status");
+            outlet.setAttribute("aria-live", "polite");
+            outlet.textContent = outlet.getAttribute(`data-portal-${state}-message`) ?? fallback;
+        }
+    }
     failure(target, error) {
+        const element = target;
+        this.feedback(element.dataset.portalTarget ?? element.dataset.portalRegion ?? "page", "error");
         this.state.set({ navigating: false, error });
         target.dispatchEvent(new CustomEvent("portal:error", { bubbles: true, detail: { error } }));
     }

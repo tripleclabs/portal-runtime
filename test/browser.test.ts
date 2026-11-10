@@ -127,6 +127,52 @@ it("falls back to native navigation for changed assets", async () => {
   expect(hard).toHaveBeenCalled();
   expect(document.title).toBe("First");
 });
+const truck = '.portal-icon[data-icon="truck"]{--_icon:url("data:image/svg+xml,t")}';
+const check = '.portal-icon[data-icon="check"]{--_icon:url("data:image/svg+xml,c")}';
+const iconStyle = () => document.head.querySelector("style[data-portal-icons]")?.textContent;
+it("keeps client navigation when only the per-page icon rules differ, and merges them", async () => {
+  document.head.insertAdjacentHTML("afterbegin", `<style>.base{}</style><style data-portal-icons="">${truck}</style>`);
+  const hard = vi.fn();
+  runtime = new PortalRuntime({
+    window,
+    hardNavigate: hard,
+    fetch: async () =>
+      response(page("Tracking", '<span class="portal-icon" data-icon="check"></span>').replace(
+        "<head>", `<head><style>.base{}</style><style data-portal-icons="">${check}\n${truck}</style>`)),
+  });
+  runtime.start();
+  await runtime.navigate("/tracking");
+  expect(hard).not.toHaveBeenCalled();
+  expect(document.title).toBe("Tracking");
+  expect(iconStyle()).toBe(`${truck}\n${check}`);
+  expect(document.head.querySelectorAll("style[data-portal-icons]").length).toBe(1);
+});
+it("still navigates natively when the base stylesheet differs", async () => {
+  document.head.insertAdjacentHTML("afterbegin", "<style>.base{}</style>");
+  const hard = vi.fn();
+  runtime = new PortalRuntime({
+    window, hardNavigate: hard,
+    fetch: async () => response(page("New", "").replace("<head>", "<head><style>.other{}</style>")),
+  });
+  runtime.start();
+  await runtime.navigate("/new");
+  expect(hard).toHaveBeenCalled();
+});
+it("adds a region response's icon rules to the live page", async () => {
+  runtime = new PortalRuntime({
+    window,
+    fetch: async () =>
+      response(`<div data-portal-fragment=""><style data-portal-icons="">${check}</style><section data-portal-region="quote"><span class="portal-icon" data-icon="check"></span></section></div>`),
+  });
+  runtime.start();
+  expect(iconStyle()).toBeUndefined();
+  await runtime.refreshRegion("quote", "/quote?quantity=7");
+  expect(document.querySelector('[data-portal-region="quote"] [data-icon="check"]')).not.toBeNull();
+  expect(iconStyle()).toBe(check);
+  expect(document.body.querySelector("style")).toBeNull();
+  await runtime.refreshRegion("quote", "/quote?quantity=8");
+  expect(iconStyle()).toBe(check);
+});
 it("preserves native opt-outs and modified clicks", () => {
   document.body.insertAdjacentHTML(
     "beforeend",
