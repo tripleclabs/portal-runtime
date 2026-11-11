@@ -23,21 +23,27 @@ var StateStore = class {
 };
 var RequestScope = class {
   pending = /* @__PURE__ */ new Map();
-  begin(key) {
-    this.pending.get(key)?.abort();
+  begin(key2) {
+    this.pending.get(key2)?.abort();
     const controller = new AbortController();
-    this.pending.set(key, controller);
+    this.pending.set(key2, controller);
     return {
       signal: controller.signal,
-      isCurrent: () => this.pending.get(key) === controller && !controller.signal.aborted,
+      isCurrent: () => this.pending.get(key2) === controller && !controller.signal.aborted,
       finish: () => {
-        if (this.pending.get(key) === controller) this.pending.delete(key);
+        if (this.pending.get(key2) === controller) this.pending.delete(key2);
       }
     };
   }
-  cancel(key) {
-    this.pending.get(key)?.abort();
-    this.pending.delete(key);
+  cancel(key2) {
+    this.pending.get(key2)?.abort();
+    this.pending.delete(key2);
+  }
+  /** Cancel every pending request whose key starts with `prefix`; returns their keys. */
+  cancelPrefix(prefix) {
+    const keys = Array.from(this.pending.keys()).filter((key2) => key2.startsWith(prefix));
+    for (const key2 of keys) this.cancel(key2);
+    return keys;
   }
   reset() {
     for (const controller of this.pending.values()) controller.abort();
@@ -90,10 +96,10 @@ var parts = (value) => {
   const mark = head.indexOf("?");
   return { path: mark < 0 ? head : head.slice(0, mark), query: mark < 0 ? void 0 : head.slice(mark + 1), fragment: hash < 0 ? void 0 : value.slice(hash + 1) };
 };
-function path(value, current) {
+function path(value, current2) {
   if (unsafe(value) || value.includes("//")) throw new Error("Ambiguous Portal path");
-  const currentParts = current.split("/").filter(Boolean);
-  const output = value.startsWith("/") ? [] : current.endsWith("/") ? currentParts : currentParts.slice(0, -1);
+  const currentParts = current2.split("/").filter(Boolean);
+  const output = value.startsWith("/") ? [] : current2.endsWith("/") ? currentParts : currentParts.slice(0, -1);
   for (const segment of value.split("/").filter(Boolean)) {
     const decoded = decodeURIComponent(segment);
     if (unsafe(decoded) || decoded.includes("/") || decoded.includes("%") || segment !== decoded && [".", ".."].includes(decoded))
@@ -120,9 +126,9 @@ var PortalURLs = class {
     this.basePath = options.basePath ?? "/";
     this.currentPath = options.currentPath ?? "/";
     if (options.selection !== void 0 && (!options.selection || typeof options.selection !== "object" || Array.isArray(options.selection))) throw new Error("Invalid Portal selection metadata");
-    if (Object.keys(options.selection ?? {}).some((key) => !["site", "version"].includes(key))) throw new Error("Unknown Portal selection key");
+    if (Object.keys(options.selection ?? {}).some((key2) => !["site", "version"].includes(key2))) throw new Error("Unknown Portal selection key");
     this.selection = Object.freeze(Object.fromEntries(Object.entries(options.selection ?? {}).filter(([, value]) => value !== void 0)));
-    if (!this.basePath.startsWith("/") || this.basePath.startsWith("//") || /[?#%]/.test(this.basePath) || this.basePath !== "/" && this.basePath.endsWith("/") || path(this.basePath, "/") !== this.basePath || !this.currentPath.startsWith("/") || this.currentPath.startsWith("//") || this.currentPath.includes("#") || unsafe(this.currentPath) || path(parts(this.currentPath).path, "/") !== parts(this.currentPath).path || Object.entries(this.selection).some(([key, value]) => !["site", "version"].includes(key) || typeof value !== "string" || !value || new TextEncoder().encode(value).length > 256 || unsafe(value)))
+    if (!this.basePath.startsWith("/") || this.basePath.startsWith("//") || /[?#%]/.test(this.basePath) || this.basePath !== "/" && this.basePath.endsWith("/") || path(this.basePath, "/") !== this.basePath || !this.currentPath.startsWith("/") || this.currentPath.startsWith("//") || this.currentPath.includes("#") || unsafe(this.currentPath) || path(parts(this.currentPath).path, "/") !== parts(this.currentPath).path || Object.entries(this.selection).some(([key2, value]) => !["site", "version"].includes(key2) || typeof value !== "string" || !value || new TextEncoder().encode(value).length > 256 || unsafe(value)))
       throw new Error("Invalid Portal routing context");
   }
   page(value) {
@@ -163,20 +169,20 @@ var PortalURLs = class {
       return value;
     }
     if (value.startsWith("#")) return value;
-    const split = parts(value), current = parts(this.currentPath);
-    const route = split.path ? path(this.strip(split.path), current.path) : current.path;
-    let query = split.query ?? (value === "" ? current.query : void 0);
+    const split = parts(value), current2 = parts(this.currentPath);
+    const route = split.path ? path(this.strip(split.path), current2.path) : current2.path;
+    let query = split.query ?? (value === "" ? current2.query : void 0);
     if (preserveSelection && Object.keys(this.selection).length) {
       const fields = (query ?? "").split("&").filter(Boolean).filter((field) => {
-        let key;
+        let key2;
         try {
-          key = decodeURIComponent(field.split("=")[0].replace(/\+/g, " "));
+          key2 = decodeURIComponent(field.split("=")[0].replace(/\+/g, " "));
         } catch {
-          key = "";
+          key2 = "";
         }
-        return !Object.hasOwn(this.selection, key);
+        return !Object.hasOwn(this.selection, key2);
       });
-      fields.push(...Object.keys(this.selection).sort().map((key) => encodeURIComponent(key) + "=" + encodeURIComponent(this.selection[key])));
+      fields.push(...Object.keys(this.selection).sort().map((key2) => encodeURIComponent(key2) + "=" + encodeURIComponent(this.selection[key2])));
       query = fields.join("&");
     }
     return this.prefix + route + (query === void 0 ? "" : "?" + query) + (split.fragment === void 0 ? "" : "#" + split.fragment);
@@ -194,6 +200,11 @@ var PortalBehaviors = class {
   doc;
   started = false;
   initialized = /* @__PURE__ */ new WeakSet();
+  /** Per initialised scope, the server markup it was initialised from. A
+   * morph leaves a scope alone while the server still renders that markup. */
+  markup = /* @__PURE__ */ new WeakMap();
+  /** Server markup for a scope a morph patched, used when it initialises again. */
+  pending = /* @__PURE__ */ new WeakMap();
   openers = /* @__PURE__ */ new Map();
   copied = /* @__PURE__ */ new Map();
   announcing = /* @__PURE__ */ new Map();
@@ -221,6 +232,42 @@ var PortalBehaviors = class {
     }
     this.copied.clear();
   }
+  /** The server markup an initialised scope came from, if it is initialised. */
+  serverMarkup(scope) {
+    return this.initialized.has(scope) ? this.markup.get(scope) : void 0;
+  }
+  /** A morph is about to patch this scope to new server markup: initialise it
+   * again on the next refresh. Its open dialog and opener stay as they are. */
+  forget(scope, markup) {
+    this.initialized.delete(scope);
+    this.markup.delete(scope);
+    this.pending.set(scope, markup);
+    const timer = this.copied.get(scope);
+    if (timer !== void 0) {
+      clearTimeout(timer);
+      this.copied.delete(scope);
+      this.uncopy(scope);
+    }
+  }
+  /** A morph removed this subtree: tear down the behaviours inside it. */
+  teardown(root) {
+    if (!(root instanceof Element)) return;
+    const scopes = [...root.matches("[data-portal-behavior]") ? [root] : [], ...Array.from(root.querySelectorAll("[data-portal-behavior]"))];
+    for (const scope of scopes) {
+      this.initialized.delete(scope);
+      this.markup.delete(scope);
+      const timer = this.copied.get(scope);
+      if (timer !== void 0) {
+        clearTimeout(timer);
+        this.copied.delete(scope);
+      }
+      clearTimeout(this.announcing.get(scope));
+      this.announcing.delete(scope);
+    }
+    for (const dialog of [...root.matches("dialog") ? [root] : [], ...Array.from(root.querySelectorAll("dialog"))]) {
+      if (dialog.open && typeof dialog.close === "function") dialog.close();
+    }
+  }
   owned(scope, selector) {
     return Array.from(scope.querySelectorAll(selector)).filter((node) => node.closest("[data-portal-behavior]") === scope);
   }
@@ -232,6 +279,7 @@ var PortalBehaviors = class {
     for (const scope of this.doc.querySelectorAll("[data-portal-behavior]")) {
       if (this.initialized.has(scope)) continue;
       const kind = scope.dataset.portalBehavior;
+      const markup = this.pending.get(scope) ?? scope.outerHTML;
       if (kind === "quantity" && this.owned(scope, 'input[type="number"][data-portal-control="value"]').length !== 1) continue;
       if (kind === "copy") {
         const buttons = this.owned(scope, 'button[data-portal-command="copy"]');
@@ -271,7 +319,9 @@ var PortalBehaviors = class {
         this.select(scope, tabs.find((tab) => !tab.disabled && tab.getAttribute("aria-selected") === "true") ?? tabs.find((tab) => !tab.disabled), false);
       } else if (kind !== "quantity" && kind !== "dialog" && kind !== "copy") continue;
       this.initialized.add(scope);
-      for (const control of this.owned(scope, "[data-portal-enhanced-only]")) control.hidden = false;
+      this.markup.set(scope, markup);
+      this.pending.delete(scope);
+      for (const control2 of this.owned(scope, "[data-portal-enhanced-only]")) control2.hidden = false;
     }
   }
   panelID(tab) {
@@ -398,11 +448,268 @@ var PortalBehaviors = class {
   };
 };
 
+// src/morph.ts
+var VALUE_IS_ATTRIBUTE = /* @__PURE__ */ new Set(["hidden", "submit", "reset", "button", "image", "file"]);
+var OPENABLE = /* @__PURE__ */ new Set(["details", "dialog"]);
+var element = (node) => node.nodeType === 1;
+var key = (node) => {
+  if (!element(node)) return void 0;
+  const stable = node.getAttribute("data-portal-key");
+  if (stable) return "%" + stable;
+  const id = node.getAttribute("id");
+  if (id) return "#" + id;
+  const region = node.getAttribute("data-portal-region");
+  return region ? "@" + region : void 0;
+};
+var CONTROLS = /* @__PURE__ */ new Set(["input", "select", "textarea"]);
+var INSTANCE_FORM_ID = /^c[1-9][0-9]*$/;
+var sameField = (live, next) => {
+  if (!element(live) || !element(next) || !CONTROLS.has(live.localName)) return true;
+  const form = (node) => {
+    const value = node.getAttribute("form");
+    return value && INSTANCE_FORM_ID.test(value) ? "instance" : value;
+  };
+  return live.getAttribute("name") === next.getAttribute("name") && live.getAttribute("type") === next.getAttribute("type") && form(live) === form(next);
+};
+var signature = (node) => {
+  const names = /* @__PURE__ */ new Set();
+  if (!element(node)) return names;
+  for (const item of [node, ...Array.from(node.querySelectorAll("[id], [name]"))]) {
+    const id = item.getAttribute("id"), name = item.getAttribute("name");
+    if (id) names.add("#" + id);
+    if (name && CONTROLS.has(item.localName)) names.add("=" + name);
+  }
+  return names;
+};
+var control = (node) => {
+  if (node.localName === "textarea" || node.localName === "select") return node;
+  if (node.localName !== "input") return void 0;
+  return VALUE_IS_ATTRIBUTE.has(node.type) ? void 0 : node;
+};
+var checkable = (node) => node.localName === "input" && ["checkbox", "radio"].includes(node.type);
+var rendered = (node) => {
+  if (checkable(node)) return String(node.defaultChecked);
+  if (node.localName === "select")
+    return Array.from(node.options).filter((option) => option.defaultSelected).map((option) => option.value).join("\n");
+  return node.defaultValue;
+};
+var current = (node) => {
+  if (checkable(node)) return String(node.checked);
+  if (node.localName === "select")
+    return Array.from(node.selectedOptions).map((option) => option.value).join("\n");
+  return node.value;
+};
+var setCurrent = (node, value) => {
+  if (current(node) === value) return;
+  if (checkable(node)) node.checked = value === "true";
+  else if (node.localName === "select") {
+    const values = value.split("\n");
+    for (const option of Array.from(node.options)) option.selected = values.includes(option.value);
+  } else node.value = value;
+};
+var resetToRendered = (node) => {
+  if (checkable(node)) node.checked = node.defaultChecked;
+  else if (node.localName === "select") {
+    const select2 = node;
+    const chosen = Array.from(select2.options).filter((option) => option.defaultSelected);
+    if (chosen.length) for (const option of Array.from(select2.options)) option.selected = option.defaultSelected;
+    else select2.selectedIndex = select2.multiple ? -1 : 0;
+  } else node.value = node.defaultValue;
+};
+var selection = (node) => {
+  if (!node || !("selectionStart" in node)) return void 0;
+  try {
+    const field = node;
+    if (field.selectionStart === null || field.selectionEnd === null) return void 0;
+    return { start: field.selectionStart, end: field.selectionEnd, direction: field.selectionDirection ?? "none" };
+  } catch {
+    return void 0;
+  }
+};
+var select = (node, range) => {
+  if (!range) return;
+  const field = node;
+  try {
+    if (field.selectionStart !== range.start || field.selectionEnd !== range.end) field.setSelectionRange(range.start, range.end, range.direction);
+  } catch {
+  }
+};
+var Morph = class {
+  constructor(doc) {
+    this.doc = doc;
+  }
+  doc;
+  /** Nodes the server rendered. Only these are matched or removed; anything
+   * else (an extension's node, a host toast) is client-owned and left alone. */
+  server = /* @__PURE__ */ new WeakSet();
+  /** Per server element, the attributes the server last rendered. Only these
+   * are removed when the server stops rendering them. */
+  serverAttributes = /* @__PURE__ */ new WeakMap();
+  /** The `open` the server last rendered, per details/dialog. */
+  serverOpen = /* @__PURE__ */ new WeakMap();
+  /** Record a subtree as server-rendered, as it is now: at start, after a swap,
+   * and for anything the morph or the runtime inserts. */
+  adopt(root) {
+    const walker = this.doc.createTreeWalker(root, 1 | 4 | 128);
+    for (let node = root; node; node = walker.nextNode()) {
+      this.server.add(node);
+      if (!element(node)) continue;
+      this.serverAttributes.set(node, new Set(Array.from(node.attributes, (attribute) => attribute.name)));
+      if (OPENABLE.has(node.localName)) this.serverOpen.set(node, node.hasAttribute("open"));
+    }
+  }
+  morph(live, next, hooks = {}) {
+    const active = this.doc.activeElement;
+    const range = selection(active);
+    this.patch(live, next, hooks, active);
+    if (active instanceof HTMLElement && active.isConnected && this.doc.activeElement !== active) {
+      active.focus({ preventScroll: true });
+      select(active, range);
+    }
+  }
+  patch(live, next, hooks, active) {
+    if (hooks.enter && !hooks.enter(live, next)) return;
+    const field = control(live);
+    const before = field && rendered(field);
+    const visitor = field && current(field);
+    const range = live === active ? selection(live) : void 0;
+    this.attributes(live, next, active);
+    if (live.localName === "textarea") {
+      const value = next.defaultValue ?? next.textContent ?? "";
+      if (live.defaultValue !== value) live.defaultValue = value;
+    } else if (live.localName !== "template") this.children(live, next, hooks, active);
+    if (!field) return;
+    if (live !== active && rendered(field) !== before) resetToRendered(field);
+    else {
+      setCurrent(field, visitor);
+      if (live === active) select(live, range);
+    }
+  }
+  attributes(live, next, active) {
+    const openable = OPENABLE.has(live.localName);
+    const previous = this.serverAttributes.get(live) ?? /* @__PURE__ */ new Set();
+    for (const attribute of Array.from(next.attributes)) {
+      if (openable && attribute.name === "open") continue;
+      if (live.getAttributeNS(attribute.namespaceURI, attribute.localName) !== attribute.value)
+        live.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+    }
+    for (const attribute of Array.from(live.attributes)) {
+      if (openable && attribute.name === "open") continue;
+      if (!previous.has(attribute.name)) continue;
+      if (live === active && attribute.name === "tabindex") continue;
+      if (!next.hasAttributeNS(attribute.namespaceURI, attribute.localName))
+        live.removeAttributeNS(attribute.namespaceURI, attribute.localName);
+    }
+    this.serverAttributes.set(live, new Set(Array.from(next.attributes, (attribute) => attribute.name)));
+    if (!openable) return;
+    const server = next.hasAttribute("open");
+    const last = this.serverOpen.get(live);
+    this.serverOpen.set(live, server);
+    if (last === void 0 || last === server) return;
+    if (live.localName === "dialog") {
+      const dialog = live;
+      if (!server && dialog.open) {
+        if (typeof dialog.close === "function") dialog.close();
+        else dialog.removeAttribute("open");
+      } else if (server && !dialog.open) dialog.setAttribute("open", "");
+    } else live.toggleAttribute("open", server);
+  }
+  children(live, next, hooks, active) {
+    const incoming = Array.from(next.childNodes);
+    const existing = Array.from(live.childNodes).filter((node) => this.server.has(node));
+    const keyed = /* @__PURE__ */ new Map();
+    const duplicate = /* @__PURE__ */ new Set();
+    for (const node of existing) {
+      const name = key(node);
+      if (!name) continue;
+      if (keyed.has(name)) duplicate.add(name);
+      else keyed.set(name, node);
+    }
+    for (const name of duplicate) keyed.delete(name);
+    const positional = existing.filter((node) => {
+      const name = key(node);
+      return !name || duplicate.has(name);
+    });
+    const used = /* @__PURE__ */ new Set();
+    const matches = incoming.map((node) => {
+      const name = key(node);
+      if (name && !duplicate.has(name)) {
+        const match2 = keyed.get(name);
+        if (!match2 || used.has(match2) || match2.nodeName !== node.nodeName || !sameField(match2, node)) return void 0;
+        used.add(match2);
+        return match2;
+      }
+      const match = this.positionalMatch(node, positional, used);
+      if (match) used.add(match);
+      return match;
+    });
+    for (const node of existing) {
+      if (used.has(node)) continue;
+      live.removeChild(node);
+      hooks.removed?.(node);
+    }
+    const skipClient = (node) => {
+      while (node && !this.server.has(node)) node = node.nextSibling;
+      return node;
+    };
+    let cursor = skipClient(live.firstChild);
+    incoming.forEach((node, index) => {
+      const match = matches[index];
+      if (!match) {
+        const fresh = this.doc.importNode(node, true);
+        live.insertBefore(fresh, cursor);
+        this.adopt(fresh);
+        hooks.inserted?.(fresh);
+        return;
+      }
+      if (match === cursor) cursor = skipClient(cursor.nextSibling);
+      else this.move(live, match, cursor);
+      if (element(match)) this.patch(match, node, hooks, active);
+      else if (match.nodeValue !== node.nodeValue) match.nodeValue = node.nodeValue;
+    });
+  }
+  /** An unkeyed node's match: among live siblings of the same tag (and the
+   * same field, for a control), the one sharing the most descendant ids and
+   * control names, the earliest on a tie; else the first one whose fields
+   * cannot conflict. Order decides between equals, never focus: a focused row
+   * must not claim a sibling's place. Two subtrees holding different fields
+   * never match, so a draft never moves into another field. */
+  positionalMatch(node, candidates, used) {
+    const open = candidates.filter((candidate) => !used.has(candidate) && candidate.nodeName === node.nodeName && sameField(candidate, node));
+    if (!element(node)) return open[0];
+    const wanted = signature(node);
+    let best, most = 0;
+    for (const candidate of open) {
+      let shared = 0;
+      for (const name of signature(candidate)) if (wanted.has(name)) shared++;
+      if (shared > most) {
+        best = candidate;
+        most = shared;
+      }
+    }
+    if (best) return best;
+    return open.find((candidate) => !wanted.size || !signature(candidate).size);
+  }
+  /** Move a keyed node into place, keeping its state where the browser can. */
+  move(parent, node, before) {
+    const atomic = parent.moveBefore;
+    if (typeof atomic === "function") {
+      try {
+        atomic.call(parent, node, before);
+        return;
+      } catch {
+      }
+    }
+    parent.insertBefore(node, before);
+  }
+};
+
 // src/browser.ts
 var PAGE = "[data-portal-page]";
 var ICONS = "style[data-portal-icons]";
 var COMPONENTS = "style[data-portal-components]";
 var INSTANCE_FORM = "form[data-portal-instance]";
+var STATUS = "[data-portal-status]";
 var INSTANCE = /^c[1-9][0-9]*$/;
 var CHANGE_DEBOUNCE = 250;
 var HISTORY = "__portalPosition";
@@ -413,9 +720,10 @@ var PortalRuntime = class {
     this.win = options.window;
     this.doc = this.win.document;
     this.behaviors = new PortalBehaviors(this.doc);
-    const selection = JSON.parse(this.doc.documentElement.dataset.portalSelection ?? "{}");
-    if (!selection || typeof selection !== "object" || Array.isArray(selection)) throw new Error("Invalid Portal selection metadata");
-    this.routing = new PortalURLs({ basePath: this.doc.documentElement.dataset.portalBase ?? "/", selection });
+    this.morpher = new Morph(this.doc);
+    const selection2 = JSON.parse(this.doc.documentElement.dataset.portalSelection ?? "{}");
+    if (!selection2 || typeof selection2 !== "object" || Array.isArray(selection2)) throw new Error("Invalid Portal selection metadata");
+    this.routing = new PortalURLs({ basePath: this.doc.documentElement.dataset.portalBase ?? "/", selection: selection2 });
     this.routing.unmount(this.win.location.pathname);
     this.serverShell = this.shell(this.doc);
     this.serverStructure = this.structure(this.doc);
@@ -441,6 +749,7 @@ var PortalRuntime = class {
   hard;
   routing;
   behaviors;
+  morpher;
   composing = /* @__PURE__ */ new WeakSet();
   /** Per instance: the pending debounce and the in-flight live change. */
   changes = /* @__PURE__ */ new Map();
@@ -454,6 +763,7 @@ var PortalRuntime = class {
       currentPath: this.routing.unmount(this.win.location.pathname + this.win.location.search)
     });
   }
+  /** The server layout outside the page content, as last rendered. */
   serverShell;
   serverStructure;
   epoch = 0;
@@ -480,6 +790,7 @@ var PortalRuntime = class {
     this.doc.addEventListener("change", this.input);
     this.doc.addEventListener("compositionstart", this.compositionStart);
     this.doc.addEventListener("compositionend", this.compositionEnd);
+    this.morpher.adopt(this.doc.body);
     this.behaviors.start();
     this.win.addEventListener("popstate", this.pop);
     this.win.addEventListener("scroll", this.savePosition);
@@ -509,9 +820,9 @@ var PortalRuntime = class {
     this.awaitingNavigation = false;
     this.requests.reset();
     this.behaviors.reset();
-    for (const [element, form] of this.forms) {
+    for (const [element2, form] of this.forms) {
       form.invalidate();
-      element.removeAttribute("aria-busy");
+      element2.removeAttribute("aria-busy");
     }
     for (const region of this.doc.querySelectorAll(
       "[data-portal-region][aria-busy]"
@@ -722,15 +1033,16 @@ var PortalRuntime = class {
   }
   routingCompatible(root) {
     try {
-      const selection = JSON.parse(root.dataset.portalSelection ?? "{}");
-      const incoming = new PortalURLs({ basePath: root.dataset.portalBase ?? "/", selection });
+      const selection2 = JSON.parse(root.dataset.portalSelection ?? "{}");
+      const incoming = new PortalURLs({ basePath: root.dataset.portalBase ?? "/", selection: selection2 });
       return incoming.basePath === this.routing.basePath && JSON.stringify(Object.entries(incoming.selection).sort()) === JSON.stringify(Object.entries(this.routing.selection).sort());
     } catch {
       return false;
     }
   }
-  pageCompatible(page) {
-    if (!this.routingCompatible(page.documentElement) || page.documentElement.dataset.portalContext !== this.context || page.documentElement.dataset.portalVersion !== this.version || page.querySelectorAll(PAGE).length !== 1 || this.shell(page) !== this.serverShell || this.structure(page) !== this.serverStructure)
+  /** A morph may also change the layout around the page; a swap may not. */
+  pageCompatible(page, morph = false) {
+    if (!this.routingCompatible(page.documentElement) || page.documentElement.dataset.portalContext !== this.context || page.documentElement.dataset.portalVersion !== this.version || page.querySelectorAll(PAGE).length !== 1 || !morph && this.shell(page) !== this.serverShell || this.structure(page) !== this.serverStructure)
       return false;
     const assets = (doc) => Array.from(
       doc.querySelectorAll(
@@ -767,16 +1079,90 @@ var PortalRuntime = class {
   replacePage(page) {
     this.adoptIcons(page);
     this.adoptComponentStyles(page);
-    this.doc.querySelector(PAGE).replaceWith(this.doc.importNode(page.querySelector(PAGE), true));
-    this.doc.title = page.title;
-    this.doc.documentElement.lang = page.documentElement.lang;
-    this.doc.documentElement.dir = page.documentElement.dir;
+    const content = this.doc.importNode(page.querySelector(PAGE), true);
+    this.doc.querySelector(PAGE).replaceWith(content);
+    this.morpher.adopt(content);
+    this.syncMetadata(page);
+    this.behaviors.refresh();
+    this.doc.dispatchEvent(new CustomEvent("portal:navigated"));
+  }
+  syncMetadata(page) {
+    if (this.doc.title !== page.title) this.doc.title = page.title;
+    if (this.doc.documentElement.lang !== page.documentElement.lang) this.doc.documentElement.lang = page.documentElement.lang;
+    if (this.doc.documentElement.dir !== page.documentElement.dir) this.doc.documentElement.dir = page.documentElement.dir;
     const metadata = 'meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"]';
+    const markup = (head) => Array.from(head.querySelectorAll(metadata), (node) => node.outerHTML).join("");
+    if (markup(this.doc.head) === markup(page.head)) return;
     for (const node of this.doc.head.querySelectorAll(metadata)) node.remove();
     for (const node of page.head.querySelectorAll(metadata))
       this.doc.head.append(this.doc.importNode(node, true));
+  }
+  /** Same URL: patch the live page toward the response, keeping visitor state
+   * (focus, typed values, open disclosures, scroll). Focus does not move. */
+  morphPage(page, current2) {
+    ++this.epoch;
+    for (const name of this.requests.cancelPrefix("region:")) this.region(this.doc, name.slice("region:".length))?.removeAttribute("aria-busy");
+    for (const change of this.changes.values()) {
+      change.controller?.abort();
+      change.controller = void 0;
+    }
+    this.adoptIcons(page);
+    this.adoptComponentStyles(page);
+    const shell = this.shell(page);
+    if (shell === this.serverShell) this.morphTree(this.doc.querySelector(PAGE), page.querySelector(PAGE), current2);
+    else {
+      this.morphTree(this.doc.body, page.body, current2);
+      this.serverShell = shell;
+    }
+    this.syncMetadata(page);
+    this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name: "page" } }));
+  }
+  /** Morph one live subtree. Behaviours re-initialise only where the morph
+   * inserted or changed their markup; removed ones are torn down. Status
+   * outlets are the runtime's own and keep their announcements. */
+  morphTree(live, next, current2) {
+    for (const [form, activity] of this.forms) {
+      if (form === current2 || !live.contains(form)) continue;
+      activity.invalidate();
+      this.forms.delete(form);
+      form.removeAttribute("aria-busy");
+      const controls = this.formLocks.get(form);
+      if (controls) this.unlockForm(form, controls);
+    }
+    const active = this.doc.activeElement;
+    const shelters = [];
+    for (let node = active?.parentElement ?? null; node; node = node.parentElement)
+      if (node.hasAttribute("data-portal-region") || node.hasAttribute("data-portal-key") || node.matches(PAGE)) shelters.push(node);
+    const removed = [];
+    this.morpher.morph(live, next, {
+      enter: (element2, incoming) => {
+        if (element2.matches(STATUS) && element2.getAttribute("data-portal-status") === incoming.getAttribute("data-portal-status")) return false;
+        if (!element2.hasAttribute("data-portal-behavior")) return true;
+        const markup = this.behaviors.serverMarkup(element2);
+        if (markup === void 0) return true;
+        if (markup === incoming.outerHTML) return false;
+        this.behaviors.forget(element2, incoming.outerHTML);
+        return true;
+      },
+      removed: (node) => removed.push(node)
+    });
+    for (const node of removed) {
+      this.behaviors.teardown(node);
+      for (const [form, activity] of this.forms) {
+        if (node.contains(form)) {
+          activity.invalidate();
+          this.forms.delete(form);
+        }
+      }
+    }
     this.behaviors.refresh();
-    this.doc.dispatchEvent(new CustomEvent("portal:navigated"));
+    if (active instanceof HTMLElement && !active.isConnected) {
+      const shelter = shelters.find((node) => node.isConnected);
+      if (shelter) {
+        if (!shelter.hasAttribute("tabindex")) shelter.tabIndex = -1;
+        shelter.focus({ preventScroll: true });
+      }
+    }
   }
   restoreFocusAndScroll(position, hash = "") {
     const heading = this.doc.querySelector(`${PAGE} h1`) ?? this.doc.querySelector(PAGE);
@@ -811,10 +1197,10 @@ var PortalRuntime = class {
     const region = form.dataset.portalTarget ?? this.eventInstance(form);
     if (method === "GET") {
       url.search = "";
-      for (const [key, value] of data)
-        if (typeof value === "string") url.searchParams.append(key, value);
+      for (const [key2, value] of data)
+        if (typeof value === "string") url.searchParams.append(key2, value);
       if (!this.endpoint(url)) {
-        for (const [key, value] of Object.entries(this.routing.selection)) url.searchParams.set(key, value);
+        for (const [key2, value] of Object.entries(this.routing.selection)) url.searchParams.set(key2, value);
       }
       if (region)
         void this.refreshRegion(region, url.href, this.historyPolicy(form)).catch(
@@ -823,7 +1209,7 @@ var PortalRuntime = class {
       else void this.navigate(url.href);
     } else {
       const body = new URLSearchParams();
-      for (const [key, value] of data) {
+      for (const [key2, value] of data) {
         if (typeof value !== "string") {
           this.failure(
             form,
@@ -831,13 +1217,13 @@ var PortalRuntime = class {
           );
           return;
         }
-        body.append(key, value);
+        body.append(key2, value);
       }
       void this.postForm(form, url, body, region);
     }
   };
-  historyPolicy(element) {
-    const policy = element.dataset.portalHistory ?? "none";
+  historyPolicy(element2) {
+    const policy = element2.dataset.portalHistory ?? "none";
     if (!["none", "replace", "advance"].includes(policy)) throw new Error("Invalid Portal history policy");
     return policy;
   }
@@ -861,8 +1247,8 @@ var PortalRuntime = class {
     if (!form.querySelector('input[name="_portal_instance"]')) return void 0;
     return this.instanceRoot(form)?.dataset.portalRegion;
   }
-  instanceRoot(element) {
-    let region = element.closest("[data-portal-region]");
+  instanceRoot(element2) {
+    let region = element2.closest("[data-portal-region]");
     while (region && !INSTANCE.test(region.dataset.portalRegion ?? ""))
       region = region.parentElement?.closest("[data-portal-region]") ?? null;
     return region ?? void 0;
@@ -894,10 +1280,10 @@ var PortalRuntime = class {
     state.controller = controller;
     const epoch = this.epoch;
     const body = new URLSearchParams();
-    for (const [key, value] of new FormData(form)) if (typeof value === "string") body.append(key, value);
+    for (const [key2, value] of new FormData(form)) if (typeof value === "string") body.append(key2, value);
     body.set("_portal_export", exportName);
     body.set("_portal_region", instance);
-    const current = () => !controller.signal.aborted && state.controller === controller && epoch === this.epoch;
+    const current2 = () => !controller.signal.aborted && state.controller === controller && epoch === this.epoch;
     try {
       const response = await this.fetcher(new URL(form.action, this.win.location.href).href, {
         method: "POST",
@@ -912,7 +1298,7 @@ var PortalRuntime = class {
         }
       });
       const html = await response.text();
-      if (!current()) return;
+      if (!current2()) return;
       if (response.status === 409 || response.status === 401 || !this.compatible(response)) {
         this.invalidate();
         this.hard(this.win.location.href);
@@ -921,24 +1307,17 @@ var PortalRuntime = class {
       if (!response.ok && response.status !== 422) throw new Error(`Component event failed (${response.status})`);
       const parsed = this.parse(html);
       if (this.isWholePage(html)) {
-        if (!this.pageCompatible(parsed)) {
+        if (!this.pageCompatible(parsed, true)) {
           this.invalidate();
           this.hard(this.win.location.href);
           return;
         }
-        this.replacePage(parsed);
+        this.morphPage(parsed);
         return;
       }
-      const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
-      if (!this.routingCompatible(metadata)) throw new Error("Region response changed Portal routing context");
-      this.adoptIcons(parsed);
-      this.adoptComponentStyles(parsed);
-      this.replaceLiveParts(instance, parsed);
-      this.adoptInstanceForms(parsed);
-      this.behaviors.refresh();
-      this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name: instance } }));
+      this.morphRegion(instance, parsed);
     } catch (error) {
-      if (current()) this.failure(container, error);
+      if (current2()) this.failure(container, error);
     } finally {
       if (state.controller === controller) state.controller = void 0;
     }
@@ -947,26 +1326,17 @@ var PortalRuntime = class {
   isWholePage(html) {
     return /^\s*<!doctype html>/i.test(html);
   }
-  /** Swap an instance's live parts, never one holding the focused control. */
-  replaceLiveParts(instance, parsed) {
-    const active = this.doc.activeElement;
-    for (const part of Array.from(this.doc.querySelectorAll("[data-portal-region]"))) {
-      const name = part.dataset.portalRegion ?? "";
-      if (!name.startsWith(instance + "-") || active && part.contains(active)) continue;
-      const replacement = this.region(parsed, name);
-      if (replacement) part.replaceWith(this.doc.importNode(replacement, true));
-    }
-  }
-  /** A response's instance forms carry fresh tokens: replace or add them. */
-  adoptInstanceForms(parsed) {
+  /** A response's instance forms carry fresh tokens: morph or add them. */
+  adoptInstanceForms(parsed, inside) {
     for (const incoming of Array.from(parsed.querySelectorAll(INSTANCE_FORM))) {
+      if (inside.contains(incoming)) continue;
       const existing = incoming.id ? this.doc.getElementById(incoming.id) : null;
-      const imported = this.doc.importNode(incoming, true);
-      if (existing instanceof HTMLFormElement && existing.matches(INSTANCE_FORM)) {
-        this.forms.get(existing)?.invalidate();
-        this.forms.delete(existing);
-        existing.replaceWith(imported);
-      } else this.doc.querySelector(PAGE)?.append(imported);
+      if (existing instanceof HTMLFormElement && existing.matches(INSTANCE_FORM)) this.morphTree(existing, incoming);
+      else {
+        const imported = this.doc.importNode(incoming, true);
+        this.doc.querySelector(PAGE)?.append(imported);
+        this.morpher.adopt(imported);
+      }
     }
   }
   input = (event) => {
@@ -976,8 +1346,8 @@ var PortalRuntime = class {
       return;
     }
     if (event.type === "change") return;
-    const control = event.target;
-    const form = control.form;
+    const control2 = event.target;
+    const form = control2.form;
     if (!form?.hasAttribute("data-portal-live") || this.composing.has(form) || event.isComposing || form.method.toUpperCase() !== "GET" || !form.dataset.portalTarget)
       return;
     const delay = Number(form.dataset.portalDebounce ?? 150);
@@ -1032,7 +1402,7 @@ var PortalRuntime = class {
       if (!response.ok)
         throw new Error(`Region request failed (${response.status})`);
       if (history !== "none" && historyRequest !== this.historyRequest) return;
-      this.replaceRegion(name, html);
+      this.morphRegion(name, this.parse(html));
       if (history !== "none") {
         const destination = response.url ? new URL(response.url) : new URL(url);
         if (!response.redirected) destination.hash = url.hash;
@@ -1056,46 +1426,26 @@ var PortalRuntime = class {
     ).filter((node) => node.dataset.portalRegion === name);
     return matches.length === 1 ? matches[0] : null;
   }
-  replaceRegion(name, html) {
+  /** Same URL: morph a region (or a component instance) toward the response.
+   * The focused control, typed values and open disclosures inside it survive. */
+  morphRegion(name, parsed, current2) {
     const target = this.region(this.doc, name);
-    const parsed = this.parse(html);
     const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
     if (!this.routingCompatible(metadata)) throw new Error("Region response changed Portal routing context");
     const replacement = this.region(parsed, name);
     if (!target || !replacement)
       throw new Error("Region response must contain one matching root");
-    const active = this.doc.activeElement;
-    if (active && target.contains(active) && active.matches("input,textarea,select")) {
-      if (!INSTANCE.test(name))
-        throw new Error("Cannot replace a region containing the focused input");
-      this.adoptIcons(parsed);
-      this.adoptComponentStyles(parsed);
-      this.replaceLiveParts(name, parsed);
-      this.adoptInstanceForms(parsed);
-      this.behaviors.refresh();
-      this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name } }));
-      return;
-    }
     for (const child of target.querySelectorAll(
       "[data-portal-region]"
     )) {
       if (child.dataset.portalRegion)
         this.requests.cancel(`region:${child.dataset.portalRegion}`);
     }
-    for (const [form, activity] of this.forms) {
-      if (target.contains(form)) {
-        activity.invalidate();
-        this.forms.delete(form);
-        const controls = this.formLocks.get(form);
-        if (controls) this.unlockForm(form, controls);
-      }
-    }
     replacement.removeAttribute("aria-busy");
     this.adoptIcons(parsed);
     this.adoptComponentStyles(parsed);
-    target.replaceWith(this.doc.importNode(replacement, true));
-    this.adoptInstanceForms(parsed);
-    this.behaviors.refresh();
+    this.morphTree(target, replacement, current2);
+    this.adoptInstanceForms(parsed, replacement);
     this.doc.dispatchEvent(
       new CustomEvent("portal:region", { detail: { name } })
     );
@@ -1108,7 +1458,7 @@ var PortalRuntime = class {
       this.forms.set(form, activity);
     }
     if (activity.state.getSnapshot().pending) return;
-    const epoch = this.epoch;
+    let epoch = this.epoch;
     if (region) this.requests.cancel(`region:${region}`);
     const headers = {
       "X-Portal-Request": region ? "region" : "navigation",
@@ -1132,6 +1482,7 @@ var PortalRuntime = class {
       },
       ({ response, html }) => {
         if (epoch !== this.epoch || !this.doc.contains(form)) return;
+        this.unlockForm(form, controls);
         if (response.status === 409 || response.status === 401) {
           this.invalidate();
           this.hard(
@@ -1155,15 +1506,22 @@ var PortalRuntime = class {
         }
         if (region && !response.redirected && !this.isWholePage(html)) {
           this.requests.cancel(`region:${region}`);
-          this.replaceRegion(region, html);
+          this.morphRegion(region, this.parse(html), form);
           this.feedback(region, "success");
         } else {
           const page = this.parse(html);
-          if (!this.pageCompatible(page)) {
+          const morph = !response.redirected || this.samePage(response.url);
+          if (!this.pageCompatible(page, morph)) {
             this.invalidate();
             this.hard(
               response.redirected ? response.url : this.win.location.href
             );
+            return;
+          }
+          if (morph) {
+            this.morphPage(page, form);
+            epoch = this.epoch;
+            this.feedback(region ?? "page", "success");
             return;
           }
           this.invalidate();
@@ -1186,17 +1544,22 @@ var PortalRuntime = class {
     const error = activity.state.getSnapshot().error;
     if (error && epoch === this.epoch) this.failure(form, error);
   }
+  /** The current document's URL, fragment aside. */
+  samePage(href) {
+    const url = new URL(href, this.win.location.href);
+    return url.origin === this.win.location.origin && url.pathname === this.win.location.pathname && url.search === this.win.location.search;
+  }
   lockForm(form) {
     const controls = Array.from(form.elements).filter(
-      (element) => ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(element.tagName)
-    ).filter((control) => !control.disabled);
-    for (const control of controls) control.disabled = true;
+      (element2) => ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(element2.tagName)
+    ).filter((control2) => !control2.disabled);
+    for (const control2 of controls) control2.disabled = true;
     this.formLocks.set(form, controls);
     return controls;
   }
   unlockForm(form, controls) {
     if (this.formLocks.get(form) !== controls) return;
-    for (const control of controls) control.disabled = false;
+    for (const control2 of controls) control2.disabled = false;
     this.formLocks.delete(form);
   }
   feedback(name, state) {
@@ -1209,8 +1572,8 @@ var PortalRuntime = class {
     }
   }
   failure(target, error) {
-    const element = target;
-    this.feedback(element.dataset.portalTarget ?? element.dataset.portalRegion ?? "page", "error");
+    const element2 = target;
+    this.feedback(element2.dataset.portalTarget ?? element2.dataset.portalRegion ?? "page", "error");
     this.state.set({ navigating: false, error });
     target.dispatchEvent(
       new CustomEvent("portal:error", { bubbles: true, detail: { error } })

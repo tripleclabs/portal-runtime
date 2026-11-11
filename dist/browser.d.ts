@@ -29,6 +29,7 @@ export declare class PortalRuntime {
     private readonly hard;
     private readonly routing;
     private readonly behaviors;
+    private readonly morpher;
     private readonly composing;
     /** Per instance: the pending debounce and the in-flight live change. */
     private readonly changes;
@@ -36,7 +37,8 @@ export declare class PortalRuntime {
     private awaitingNavigation;
     /** URL helpers follow the current logical page after enhanced navigation. */
     get urls(): PortalURLs;
-    private readonly serverShell;
+    /** The server layout outside the page content, as last rendered. */
+    private serverShell;
     private readonly serverStructure;
     private epoch;
     private navigationAttempt;
@@ -69,6 +71,7 @@ export declare class PortalRuntime {
     private shell;
     private structure;
     private routingCompatible;
+    /** A morph may also change the layout around the page; a swap may not. */
     private pageCompatible;
     /** The host inlines only the icon mask rules a response uses, one per line,
      * in style[data-portal-icons] (a page's head, or beside a region's root).
@@ -79,6 +82,14 @@ export declare class PortalRuntime {
     adoptComponentStyles(source: Document): void;
     private adoptRules;
     private replacePage;
+    private syncMetadata;
+    /** Same URL: patch the live page toward the response, keeping visitor state
+     * (focus, typed values, open disclosures, scroll). Focus does not move. */
+    private morphPage;
+    /** Morph one live subtree. Behaviours re-initialise only where the morph
+     * inserted or changed their markup; removed ones are torn down. Status
+     * outlets are the runtime's own and keep their announcements. */
+    private morphTree;
     private restoreFocusAndScroll;
     private submit;
     private historyPolicy;
@@ -95,15 +106,17 @@ export declare class PortalRuntime {
     private postChange;
     /** A complete document rather than a region fragment. */
     private isWholePage;
-    /** Swap an instance's live parts, never one holding the focused control. */
-    private replaceLiveParts;
-    /** A response's instance forms carry fresh tokens: replace or add them. */
+    /** A response's instance forms carry fresh tokens: morph or add them. */
     private adoptInstanceForms;
     private input;
     refreshRegion(name: string, href: string, history?: RegionHistory): Promise<void>;
     private region;
-    private replaceRegion;
+    /** Same URL: morph a region (or a component instance) toward the response.
+     * The focused control, typed values and open disclosures inside it survive. */
+    private morphRegion;
     private postForm;
+    /** The current document's URL, fragment aside. */
+    private samePage;
     private lockForm;
     private unlockForm;
     private feedback;

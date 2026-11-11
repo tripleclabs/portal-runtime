@@ -41,13 +41,14 @@ it("does not submit unfinished IME composition and debounces its final value", a
   await vi.advanceTimersByTimeAsync(151); expect(fetcher).toHaveBeenCalledTimes(1);
   expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get("q")).toBe("完成");
 });
-it("keeps focused drafts safe and exposes an actionable failure", async () => {
-  document.querySelector("[data-portal-region]")!.innerHTML = '<input name="quantity" value="3">';
+it("morphs a region around a focused draft", async () => {
+  document.querySelector("[data-portal-region]")!.innerHTML = '<input name="quantity" value="3"><p>Old</p>';
   const input = document.querySelector<HTMLInputElement>('[name="quantity"]')!; input.focus(); input.value = "7";
-  runtime = new PortalRuntime({ window, fetch: async () => response() }); runtime.start();
+  runtime = new PortalRuntime({ window, fetch: async () => response('<input name="quantity" value="3"><p>New</p>') }); runtime.start();
   await runtime.refreshRegion("catalog", "/?q=x", "advance");
-  expect(input.isConnected).toBe(true); expect(input.value).toBe("7"); expect(document.activeElement).toBe(input); expect(location.search).toBe("");
-  expect(document.querySelector("[data-portal-status]")!.textContent).toBe("Please retry");
+  expect(input.isConnected).toBe(true); expect(input.value).toBe("7"); expect(document.activeElement).toBe(input); expect(location.search).toBe("?q=x");
+  expect(document.querySelector("[data-portal-region] p")!.textContent).toBe("New");
+  expect(document.querySelector("[data-portal-status]")!.textContent).toBe("Updated.");
 });
 it("quantity honours min/max/step and dispatches native events once across refreshes", () => {
   document.body.innerHTML = '<div data-portal-behavior="quantity"><button type="button" hidden data-portal-enhanced-only data-portal-command="increment">+</button><input type="number" data-portal-control="value" min="2" max="6" step="2" value="2"></div>';

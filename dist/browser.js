@@ -1,10 +1,12 @@
 import { FormActivity, RequestScope, StateStore } from "./state.js";
 import { PortalURLs } from "./urls.js";
 import { PortalBehaviors } from "./behaviors.js";
+import { Morph } from "./morph.js";
 const PAGE = "[data-portal-page]";
 const ICONS = "style[data-portal-icons]";
 const COMPONENTS = "style[data-portal-components]";
 const INSTANCE_FORM = "form[data-portal-instance]";
+const STATUS = "[data-portal-status]";
 /** A component instance (`c3`) or one of its live parts (`c3-total`). */
 const INSTANCE = /^c[1-9][0-9]*$/;
 const CHANGE_DEBOUNCE = 250;
@@ -27,6 +29,7 @@ export class PortalRuntime {
     hard;
     routing;
     behaviors;
+    morpher;
     composing = new WeakSet();
     /** Per instance: the pending debounce and the in-flight live change. */
     changes = new Map();
@@ -37,6 +40,7 @@ export class PortalRuntime {
         return new PortalURLs({ basePath: this.routing.basePath, selection: this.routing.selection,
             currentPath: this.routing.unmount(this.win.location.pathname + this.win.location.search) });
     }
+    /** The server layout outside the page content, as last rendered. */
     serverShell;
     serverStructure;
     epoch = 0;
@@ -55,6 +59,7 @@ export class PortalRuntime {
         this.win = options.window;
         this.doc = this.win.document;
         this.behaviors = new PortalBehaviors(this.doc);
+        this.morpher = new Morph(this.doc);
         const selection = JSON.parse(this.doc.documentElement.dataset.portalSelection ?? "{}");
         if (!selection || typeof selection !== "object" || Array.isArray(selection))
             throw new Error("Invalid Portal selection metadata");
@@ -88,6 +93,7 @@ export class PortalRuntime {
         this.doc.addEventListener("change", this.input);
         this.doc.addEventListener("compositionstart", this.compositionStart);
         this.doc.addEventListener("compositionend", this.compositionEnd);
+        this.morpher.adopt(this.doc.body);
         this.behaviors.start();
         this.win.addEventListener("popstate", this.pop);
         this.win.addEventListener("scroll", this.savePosition);
@@ -361,12 +367,13 @@ export class PortalRuntime {
             return false;
         }
     }
-    pageCompatible(page) {
+    /** A morph may also change the layout around the page; a swap may not. */
+    pageCompatible(page, morph = false) {
         if (!this.routingCompatible(page.documentElement) ||
             page.documentElement.dataset.portalContext !== this.context ||
             page.documentElement.dataset.portalVersion !== this.version ||
             page.querySelectorAll(PAGE).length !== 1 ||
-            this.shell(page) !== this.serverShell ||
+            (!morph && this.shell(page) !== this.serverShell) ||
             this.structure(page) !== this.serverStructure)
             return false;
         // Asset/layout changes get native navigation rather than partially loading code.
@@ -405,19 +412,113 @@ export class PortalRuntime {
     replacePage(page) {
         this.adoptIcons(page);
         this.adoptComponentStyles(page);
-        this.doc
-            .querySelector(PAGE)
-            .replaceWith(this.doc.importNode(page.querySelector(PAGE), true));
-        this.doc.title = page.title;
-        this.doc.documentElement.lang = page.documentElement.lang;
-        this.doc.documentElement.dir = page.documentElement.dir;
+        const content = this.doc.importNode(page.querySelector(PAGE), true);
+        this.doc.querySelector(PAGE).replaceWith(content);
+        this.morpher.adopt(content);
+        this.syncMetadata(page);
+        this.behaviors.refresh();
+        this.doc.dispatchEvent(new CustomEvent("portal:navigated"));
+    }
+    syncMetadata(page) {
+        if (this.doc.title !== page.title)
+            this.doc.title = page.title;
+        if (this.doc.documentElement.lang !== page.documentElement.lang)
+            this.doc.documentElement.lang = page.documentElement.lang;
+        if (this.doc.documentElement.dir !== page.documentElement.dir)
+            this.doc.documentElement.dir = page.documentElement.dir;
         const metadata = 'meta[name]:not([name="viewport"]), meta[property], link[rel="canonical"], link[rel~="icon"], script[type="application/ld+json"]';
+        const markup = (head) => Array.from(head.querySelectorAll(metadata), (node) => node.outerHTML).join("");
+        if (markup(this.doc.head) === markup(page.head))
+            return;
         for (const node of this.doc.head.querySelectorAll(metadata))
             node.remove();
         for (const node of page.head.querySelectorAll(metadata))
             this.doc.head.append(this.doc.importNode(node, true));
+    }
+    /** Same URL: patch the live page toward the response, keeping visitor state
+     * (focus, typed values, open disclosures, scroll). Focus does not move. */
+    morphPage(page, current) {
+        // Anything requested before this page response is older than it: region
+        // and change responses must not land on what it re-rendered.
+        ++this.epoch;
+        for (const name of this.requests.cancelPrefix("region:"))
+            this.region(this.doc, name.slice("region:".length))?.removeAttribute("aria-busy");
+        for (const change of this.changes.values()) {
+            change.controller?.abort();
+            change.controller = undefined;
+        }
+        this.adoptIcons(page);
+        this.adoptComponentStyles(page);
+        // Only the page content, unless the server's layout changed too (a basket
+        // total in the header): then the whole body, and that is the new layout.
+        const shell = this.shell(page);
+        if (shell === this.serverShell)
+            this.morphTree(this.doc.querySelector(PAGE), page.querySelector(PAGE), current);
+        else {
+            this.morphTree(this.doc.body, page.body, current);
+            this.serverShell = shell;
+        }
+        this.syncMetadata(page);
+        this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name: "page" } }));
+    }
+    /** Morph one live subtree. Behaviours re-initialise only where the morph
+     * inserted or changed their markup; removed ones are torn down. Status
+     * outlets are the runtime's own and keep their announcements. */
+    morphTree(live, next, current) {
+        // Forms in flight inside what is re-rendered no longer apply: their
+        // responses are discarded and their controls unlocked, as for a swap.
+        for (const [form, activity] of this.forms) {
+            if (form === current || !live.contains(form))
+                continue;
+            activity.invalidate();
+            this.forms.delete(form);
+            form.removeAttribute("aria-busy");
+            const controls = this.formLocks.get(form);
+            if (controls)
+                this.unlockForm(form, controls);
+        }
+        // Where focus goes if the morph removes the focused element: the nearest
+        // instance or region around it that survives, else the page.
+        const active = this.doc.activeElement;
+        const shelters = [];
+        for (let node = active?.parentElement ?? null; node; node = node.parentElement)
+            if (node.hasAttribute("data-portal-region") || node.hasAttribute("data-portal-key") || node.matches(PAGE))
+                shelters.push(node);
+        const removed = [];
+        this.morpher.morph(live, next, {
+            enter: (element, incoming) => {
+                if (element.matches(STATUS) && element.getAttribute("data-portal-status") === incoming.getAttribute("data-portal-status"))
+                    return false;
+                if (!element.hasAttribute("data-portal-behavior"))
+                    return true;
+                const markup = this.behaviors.serverMarkup(element);
+                if (markup === undefined)
+                    return true;
+                if (markup === incoming.outerHTML)
+                    return false;
+                this.behaviors.forget(element, incoming.outerHTML);
+                return true;
+            },
+            removed: (node) => removed.push(node),
+        });
+        for (const node of removed) {
+            this.behaviors.teardown(node);
+            for (const [form, activity] of this.forms) {
+                if (node.contains(form)) {
+                    activity.invalidate();
+                    this.forms.delete(form);
+                }
+            }
+        }
         this.behaviors.refresh();
-        this.doc.dispatchEvent(new CustomEvent("portal:navigated"));
+        if (active instanceof HTMLElement && !active.isConnected) {
+            const shelter = shelters.find((node) => node.isConnected);
+            if (shelter) {
+                if (!shelter.hasAttribute("tabindex"))
+                    shelter.tabIndex = -1;
+                shelter.focus({ preventScroll: true });
+            }
+        }
     }
     restoreFocusAndScroll(position, hash = "") {
         const heading = this.doc.querySelector(`${PAGE} h1`) ??
@@ -586,24 +687,17 @@ export class PortalRuntime {
             if (!response.ok && response.status !== 422)
                 throw new Error(`Component event failed (${response.status})`);
             const parsed = this.parse(html);
+            // A privileged export answers with the whole page: morph it in.
             if (this.isWholePage(html)) {
-                if (!this.pageCompatible(parsed)) {
+                if (!this.pageCompatible(parsed, true)) {
                     this.invalidate();
                     this.hard(this.win.location.href);
                     return;
                 }
-                this.replacePage(parsed);
+                this.morphPage(parsed);
                 return;
             }
-            const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
-            if (!this.routingCompatible(metadata))
-                throw new Error("Region response changed Portal routing context");
-            this.adoptIcons(parsed);
-            this.adoptComponentStyles(parsed);
-            this.replaceLiveParts(instance, parsed);
-            this.adoptInstanceForms(parsed);
-            this.behaviors.refresh();
-            this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name: instance } }));
+            this.morphRegion(instance, parsed);
         }
         catch (error) {
             if (current())
@@ -618,30 +712,19 @@ export class PortalRuntime {
     isWholePage(html) {
         return /^\s*<!doctype html>/i.test(html);
     }
-    /** Swap an instance's live parts, never one holding the focused control. */
-    replaceLiveParts(instance, parsed) {
-        const active = this.doc.activeElement;
-        for (const part of Array.from(this.doc.querySelectorAll("[data-portal-region]"))) {
-            const name = part.dataset.portalRegion ?? "";
-            if (!name.startsWith(instance + "-") || (active && part.contains(active)))
-                continue;
-            const replacement = this.region(parsed, name);
-            if (replacement)
-                part.replaceWith(this.doc.importNode(replacement, true));
-        }
-    }
-    /** A response's instance forms carry fresh tokens: replace or add them. */
-    adoptInstanceForms(parsed) {
+    /** A response's instance forms carry fresh tokens: morph or add them. */
+    adoptInstanceForms(parsed, inside) {
         for (const incoming of Array.from(parsed.querySelectorAll(INSTANCE_FORM))) {
+            if (inside.contains(incoming))
+                continue;
             const existing = incoming.id ? this.doc.getElementById(incoming.id) : null;
-            const imported = this.doc.importNode(incoming, true);
-            if (existing instanceof HTMLFormElement && existing.matches(INSTANCE_FORM)) {
-                this.forms.get(existing)?.invalidate();
-                this.forms.delete(existing);
-                existing.replaceWith(imported);
-            }
-            else
+            if (existing instanceof HTMLFormElement && existing.matches(INSTANCE_FORM))
+                this.morphTree(existing, incoming);
+            else {
+                const imported = this.doc.importNode(incoming, true);
                 this.doc.querySelector(PAGE)?.append(imported);
+                this.morpher.adopt(imported);
+            }
         }
     }
     input = (event) => {
@@ -715,7 +798,7 @@ export class PortalRuntime {
                 throw new Error(`Region request failed (${response.status})`);
             if (history !== "none" && historyRequest !== this.historyRequest)
                 return;
-            this.replaceRegion(name, html);
+            this.morphRegion(name, this.parse(html));
             if (history !== "none") {
                 const destination = response.url ? new URL(response.url) : new URL(url);
                 if (!response.redirected)
@@ -744,50 +827,25 @@ export class PortalRuntime {
         const matches = Array.from(doc.querySelectorAll("[data-portal-region]")).filter((node) => node.dataset.portalRegion === name);
         return matches.length === 1 ? matches[0] : null;
     }
-    replaceRegion(name, html) {
+    /** Same URL: morph a region (or a component instance) toward the response.
+     * The focused control, typed values and open disclosures inside it survive. */
+    morphRegion(name, parsed, current) {
         const target = this.region(this.doc, name);
-        const parsed = this.parse(html);
         const metadata = parsed.querySelector("[data-portal-fragment]") ?? parsed.documentElement;
         if (!this.routingCompatible(metadata))
             throw new Error("Region response changed Portal routing context");
         const replacement = this.region(parsed, name);
         if (!target || !replacement)
             throw new Error("Region response must contain one matching root");
-        const active = this.doc.activeElement;
-        // Forms should be siblings of their result region. Never destroy live input.
-        if (active &&
-            target.contains(active) &&
-            active.matches("input,textarea,select")) {
-            if (!INSTANCE.test(name))
-                throw new Error("Cannot replace a region containing the focused input");
-            // A component instance keeps the control being edited and updates its live parts.
-            this.adoptIcons(parsed);
-            this.adoptComponentStyles(parsed);
-            this.replaceLiveParts(name, parsed);
-            this.adoptInstanceForms(parsed);
-            this.behaviors.refresh();
-            this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name } }));
-            return;
-        }
         for (const child of target.querySelectorAll("[data-portal-region]")) {
             if (child.dataset.portalRegion)
                 this.requests.cancel(`region:${child.dataset.portalRegion}`);
         }
-        for (const [form, activity] of this.forms) {
-            if (target.contains(form)) {
-                activity.invalidate();
-                this.forms.delete(form);
-                const controls = this.formLocks.get(form);
-                if (controls)
-                    this.unlockForm(form, controls);
-            }
-        }
         replacement.removeAttribute("aria-busy");
         this.adoptIcons(parsed);
         this.adoptComponentStyles(parsed);
-        target.replaceWith(this.doc.importNode(replacement, true));
-        this.adoptInstanceForms(parsed);
-        this.behaviors.refresh();
+        this.morphTree(target, replacement, current);
+        this.adoptInstanceForms(parsed, replacement);
         this.doc.dispatchEvent(new CustomEvent("portal:region", { detail: { name } }));
     }
     async postForm(form, url, data, region) {
@@ -800,7 +858,7 @@ export class PortalRuntime {
         }
         if (activity.state.getSnapshot().pending)
             return;
-        const epoch = this.epoch;
+        let epoch = this.epoch;
         if (region)
             this.requests.cancel(`region:${region}`);
         const headers = {
@@ -827,6 +885,8 @@ export class PortalRuntime {
         }, ({ response, html }) => {
             if (epoch !== this.epoch || !this.doc.contains(form))
                 return;
+            // The response decides the controls' disabled state, not the lock.
+            this.unlockForm(form, controls);
             if (response.status === 409 || response.status === 401) {
                 this.invalidate();
                 this.hard(response.redirected ? response.url : this.win.location.href);
@@ -844,18 +904,27 @@ export class PortalRuntime {
                 this.hard(response.redirected ? response.url : this.win.location.href);
                 return;
             }
-            // A component event answers with the whole page when its instance
-            // moved or disappeared (for example, the export removed it from a list).
+            // A region (or a pure component event's instance) morphs in place.
             if (region && !response.redirected && !this.isWholePage(html)) {
                 this.requests.cancel(`region:${region}`);
-                this.replaceRegion(region, html);
+                this.morphRegion(region, this.parse(html), form);
                 this.feedback(region, "success");
             }
             else {
                 const page = this.parse(html);
-                if (!this.pageCompatible(page)) {
+                // The same URL (no redirect, a privileged component event, or a
+                // redirect back here) morphs; another URL swaps.
+                const morph = !response.redirected || this.samePage(response.url);
+                if (!this.pageCompatible(page, morph)) {
                     this.invalidate();
                     this.hard(response.redirected ? response.url : this.win.location.href);
+                    return;
+                }
+                if (morph) {
+                    this.morphPage(page, form);
+                    // This submission produced the page; it is not superseded by it.
+                    epoch = this.epoch;
+                    this.feedback(region ?? "page", "success");
                     return;
                 }
                 this.invalidate();
@@ -874,6 +943,11 @@ export class PortalRuntime {
         const error = activity.state.getSnapshot().error;
         if (error && epoch === this.epoch)
             this.failure(form, error);
+    }
+    /** The current document's URL, fragment aside. */
+    samePage(href) {
+        const url = new URL(href, this.win.location.href);
+        return url.origin === this.win.location.origin && url.pathname === this.win.location.pathname && url.search === this.win.location.search;
     }
     lockForm(form) {
         const controls = Array.from(form.elements)

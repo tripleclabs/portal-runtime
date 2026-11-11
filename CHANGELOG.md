@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-11-11
+
+- Morph same-URL responses instead of replacing them: component event responses, region responses (live GET forms, targeted links), POST responses without a redirect, and redirects back to the current URL. A zero-dependency morph matches children by key (`data-portal-key`, else `id`, else `data-portal-region`) and then by tag and position, moves keyed nodes rather than repainting them, and keeps visitor state: the focused element's value, selection and focus; typed control values unless the server's rendered value changed; live `open` on `<details>`/`<dialog>` unless the server changed it; scroll. Unchanged content (live regions included) is not touched.
+- Component instances key on the host's stable `data-portal-key`, so removing one keeps the others' DOM, drafts and focus although their `c<n>` renumber.
+- Drafts never move between fields: an unkeyed node prefers a sibling sharing its descendant ids or control names, subtrees with different fields never match, and a control whose `name`, `type` or `form` changed is replaced (so a retyped control takes the server's value).
+- Only server-rendered nodes and attributes are matched, moved or removed; client-owned ones survive a morph, including a layout morph. That covers whole nodes (an extension's node) and whole attributes the server never rendered on that element: a `class` a script adds to `<body>` survives only while the server renders no `class` on `<body>`, since removal and update work per attribute name. Nodes present when the runtime starts count as server-rendered.
+- Unkeyed siblings are matched by shared field names and then by order, never by focus, so a focused row keeps its place and its own hidden values.
+- No focus moves on a morph, unless it removed the focused element: focus then goes to the nearest surviving instance or region root (else the page), with `tabindex="-1"` and no scrolling.
+- A form in flight inside a morphed region is discarded and unlocked; a page morph supersedes region and live-change requests made before it.
+- A whole-page morph patches the page root, or the whole body when the server's layout changed too, and signals `portal:region` with `detail.name` `"page"`. Navigation and redirects to another URL still swap, moving focus and resetting scroll.
+- Behaviours re-initialise only in inserted subtrees or where the server's markup for them changed; removed ones are torn down.
+- A region containing the focused control is morphed rather than refused, and an event no longer swaps only an instance's live parts: the whole instance is morphed around the control being edited.
+- A component event answered with the whole page (a privileged export) is morphed, so data it changed elsewhere on the page shows up.
+
 ## 0.3.0 — 2026-11-10
 
 - Handle component events. An event button (`name="_portal_export"`, associated with its instance's hidden `form[data-portal-instance]`) and an author's event form post through the ordinary form lifecycle, targeting the instance region (`_portal_region=c<n>`). A response carries fresh instance forms, which replace the live ones.

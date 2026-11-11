@@ -54,7 +54,7 @@ it("clickPostsInstanceFormWithExport", async () => {
   expect(posted.get("quantity")).toBe("1");
   expect(posted.get("_portal_region")).toBe("c1");
   expect(new Headers(init?.headers).get("X-Portal-Request")).toBe("region");
-  // The instance's form came back with a fresh token and replaced the old one.
+  // The instance's form came back with a fresh token, morphed into the old one.
   expect(document.querySelectorAll("form[data-portal-instance]").length).toBe(1);
   expect(document.querySelector<HTMLInputElement>('#c1 [name="_portal_instance"]')?.value).toBe("token-2");
 });
@@ -101,7 +101,7 @@ it("focusedControlIsNotReplaced", async () => {
   input.value = "7";
   document.querySelector<HTMLFormElement>("#c1")!.requestSubmit(document.querySelector<HTMLButtonElement>('button[value="submit"]')!);
   await vi.waitFor(() => expect(document.querySelector('[data-portal-region="c1-total"]')?.textContent).toBe("Updated"));
-  // The instance root holds the control being edited: only its live parts swap.
+  // The instance morphs around the control being edited.
   expect(document.querySelector('input[name="quantity"]')).toBe(input);
   expect(input.value).toBe("7");
   expect(document.activeElement).toBe(input);
@@ -136,8 +136,8 @@ it("conflictReloads", async () => {
   await vi.waitFor(() => expect(hard).toHaveBeenCalledWith("http://localhost:3000/"));
 });
 
-it("wholePageResponseToAnEventSwapsThePage", async () => {
-  // The export removed its own instance: the host answers with the whole page.
+it("wholePageResponseToAnEventMorphsThePage", async () => {
+  // A privileged export answers with the whole page; here it removed its own instance.
   const page = `<!doctype html><html data-portal-context="guest-1" data-portal-version="v1"><head><title>Shop</title></head>` +
     `<body><main data-portal-page><h1>Shop</h1><p>Your basket is empty</p></main></body></html>`;
   const hard = vi.fn();

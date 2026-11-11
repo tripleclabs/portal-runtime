@@ -4,6 +4,7 @@ Small, dependency-free state and navigation primitives for server-rendered HTML.
 
 - **Progressive navigation:** replace a page while retaining its surrounding shell, metadata, focus, scroll, and browser history.
 - **Targeted updates:** refresh named regions, with cancellation and stale-response guards.
+- **Same-URL morphing:** responses that keep the URL are patched into the live DOM, keeping focus, drafts, caret, open disclosures and scroll.
 - **Form lifecycle:** prevent duplicate submissions and ignore obsolete responses without automatically retrying writes.
 - **Shared state:** observable snapshots, request scopes, submission generations, and lifecycle leases work independently of the DOM runtime.
 

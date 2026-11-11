@@ -20,6 +20,8 @@ export declare class RequestScope {
         finish: () => void;
     };
     cancel(key: string): void;
+    /** Cancel every pending request whose key starts with `prefix`; returns their keys. */
+    cancelPrefix(prefix: string): string[];
     reset(): void;
 }
 export interface RuntimeLifecycle {

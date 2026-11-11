@@ -46,6 +46,13 @@ export class RequestScope {
         this.pending.get(key)?.abort();
         this.pending.delete(key);
     }
+    /** Cancel every pending request whose key starts with `prefix`; returns their keys. */
+    cancelPrefix(prefix) {
+        const keys = Array.from(this.pending.keys()).filter((key) => key.startsWith(prefix));
+        for (const key of keys)
+            this.cancel(key);
+        return keys;
+    }
     reset() {
         for (const controller of this.pending.values())
             controller.abort();

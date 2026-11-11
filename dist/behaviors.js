@@ -3,6 +3,11 @@ export class PortalBehaviors {
     doc;
     started = false;
     initialized = new WeakSet();
+    /** Per initialised scope, the server markup it was initialised from. A
+     * morph leaves a scope alone while the server still renders that markup. */
+    markup = new WeakMap();
+    /** Server markup for a scope a morph patched, used when it initialises again. */
+    pending = new WeakMap();
     openers = new Map();
     copied = new Map();
     announcing = new Map();
@@ -36,6 +41,44 @@ export class PortalBehaviors {
         }
         this.copied.clear();
     }
+    /** The server markup an initialised scope came from, if it is initialised. */
+    serverMarkup(scope) {
+        return this.initialized.has(scope) ? this.markup.get(scope) : undefined;
+    }
+    /** A morph is about to patch this scope to new server markup: initialise it
+     * again on the next refresh. Its open dialog and opener stay as they are. */
+    forget(scope, markup) {
+        this.initialized.delete(scope);
+        this.markup.delete(scope);
+        this.pending.set(scope, markup);
+        const timer = this.copied.get(scope);
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            this.copied.delete(scope);
+            this.uncopy(scope);
+        }
+    }
+    /** A morph removed this subtree: tear down the behaviours inside it. */
+    teardown(root) {
+        if (!(root instanceof Element))
+            return;
+        const scopes = [...(root.matches("[data-portal-behavior]") ? [root] : []), ...Array.from(root.querySelectorAll("[data-portal-behavior]"))];
+        for (const scope of scopes) {
+            this.initialized.delete(scope);
+            this.markup.delete(scope);
+            const timer = this.copied.get(scope);
+            if (timer !== undefined) {
+                clearTimeout(timer);
+                this.copied.delete(scope);
+            }
+            clearTimeout(this.announcing.get(scope));
+            this.announcing.delete(scope);
+        }
+        for (const dialog of [...(root.matches("dialog") ? [root] : []), ...Array.from(root.querySelectorAll("dialog"))]) {
+            if (dialog.open && typeof dialog.close === "function")
+                dialog.close();
+        }
+    }
     owned(scope, selector) {
         return Array.from(scope.querySelectorAll(selector)).filter(node => node.closest("[data-portal-behavior]") === scope);
     }
@@ -50,6 +93,7 @@ export class PortalBehaviors {
             if (this.initialized.has(scope))
                 continue;
             const kind = scope.dataset.portalBehavior;
+            const markup = this.pending.get(scope) ?? scope.outerHTML;
             if (kind === "quantity" && this.owned(scope, 'input[type="number"][data-portal-control="value"]').length !== 1)
                 continue;
             if (kind === "copy") {
@@ -102,6 +146,8 @@ export class PortalBehaviors {
             else if (kind !== "quantity" && kind !== "dialog" && kind !== "copy")
                 continue;
             this.initialized.add(scope);
+            this.markup.set(scope, markup);
+            this.pending.delete(scope);
             for (const control of this.owned(scope, "[data-portal-enhanced-only]"))
                 control.hidden = false;
         }
